@@ -29,6 +29,9 @@ HEADLESS = os.getenv("HEADLESS", "False").lower() == "true"
 USERNAME = os.getenv("UNITY_USER")
 PASSWORD = os.getenv("PASSWORD")
 
+if not USERNAME or not PASSWORD:
+    raise RuntimeError("Missing UNITY_USER or PASSWORD in .env file.")
+
 # === Utility Functions ===
 def dismiss_alert(driver):
     try:
@@ -455,6 +458,8 @@ class CalendarBuddyGUI:
     def get_weekly_jobs(self):
         try:
             self.init_driver()
+            if not self.driver:
+                return  # Stop here if driver init failed
             jobs = scrape_jobs(self.driver, mode="new", test_mode=self.test_mode.get(), test_limit=self.test_limit.get())
             if not jobs:
                 messagebox.showwarning("No Jobs", "No new jobs were found.")
@@ -475,6 +480,8 @@ class CalendarBuddyGUI:
             return
         try:
             self.init_driver()
+            if not self.driver:
+                return  # Stop here if driver init failed
             jobs = scrape_jobs(self.driver, mode="update", imported_jobs=imported_jobs, test_mode=self.test_mode.get(), test_limit=self.test_limit.get())
 
             if not jobs:
@@ -522,20 +529,25 @@ class CalendarBuddyGUI:
         return jobs
 
     def init_driver(self):
-        if self.driver is None:
-            options = Options()
-            options.page_load_strategy = 'eager'
-            options.add_experimental_option("detach", True)
+        try:
+            if self.driver is None:
+                options = Options()
+                options.page_load_strategy = 'eager'
+                options.add_experimental_option("detach", True)
 
-            if self.headless_mode.get():
-                options.add_argument("--headless=new")
-                options.add_argument("--disable-gpu")
-                options.add_argument("--window-size=1920,1080")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")   
+                if self.headless_mode.get():
+                    options.add_argument("--headless=new")
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--window-size=1920,1080")
+                    options.add_argument("--no-sandbox")
+                    options.add_argument("--disable-dev-shm-usage")   
 
-            self.driver = webdriver.Chrome(service=Service("./chromedriver.exe"), options=options)
-            handle_login(self.driver)
+                self.driver = webdriver.Chrome(service=Service("./chromedriver.exe"), options=options)
+                handle_login(self.driver)
+        except Exception as e:
+            messagebox.showerror("Login Error", f"Login failed: {e}")
+            self.driver = None
+
 
 # === EXPORT FUNCTIONS ===
 def export_txt(jobs, filename="calendar_output.txt"):
@@ -610,60 +622,75 @@ def load_cookies(driver, filename="cookies.pkl"):
     try:
         with open(filename, "rb") as f:
             cookies = pickle.load(f)
+            if not isinstance(cookies, list):
+                print("❌ Cookie file is corrupted or not a list.")
+                return False
 
         driver.get("http://inside.sockettelecom.com/")
         for cookie in cookies:
+            if not isinstance(cookie, dict):
+                print("❌ Skipping invalid cookie:", cookie)
+                continue
             driver.add_cookie(cookie)
 
         driver.refresh()
+        time.sleep(1)
 
-        # 🧹 Immediately clear overlays after refresh
+        # Confirm login is valid
+        if "login.php" in driver.current_url or "Username" in driver.page_source:
+            print("🔐 Cookies invalid — still on login page.")
+            return False
+
         clear_first_time_overlays(driver)
         return True
-    except (EOFError, pickle.UnpicklingError) as e:
-        print(f"⚠️ Deleting corrupted cookie file: {filename}")
-        os.remove(filename)
+
+    except Exception as e:
+        print(f"⚠️ Failed to load cookies: {e}")
+        if os.path.exists(filename):
+            os.remove(filename)
+            print("🧹 Removed bad cookie file.")
         return False
+
 
 def handle_login(driver):
     driver.get("http://inside.sockettelecom.com/")
-
-    if load_cookies(driver):
-        print("🍪 Cookies loaded. Verifying session...")
-
-        # Check if login is still required after cookies load
-        if "login.php" in driver.current_url or "Username" in driver.page_source:
-            print("⚠️ Cookie session invalid — login required again.")
+    if not load_cookies(driver):
+        print("🔐 Logging in manually...")
+        try:
             perform_login(driver)
             time.sleep(2)
             save_cookies(driver)
-        else:
-            print("✅ Session restored via cookies.")
-            clear_first_time_overlays(driver)
+        except RuntimeError as e:
+            print("❌ Could not complete login. Check credentials or server.")
+            raise e
     else:
-        print("🔐 No cookies found. Performing login...")
-        perform_login(driver)
-        time.sleep(2)
-        save_cookies(driver)
+        print("🍪 Logged in via cookies.")
+
+
 
 def perform_login(driver):
     driver.get("http://inside.sockettelecom.com/system/login.php")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
 
-    dismiss_alert(driver)  # <-- Just in case alert is up already
+    dismiss_alert(driver)
 
     driver.find_element(By.NAME, "username").send_keys(USERNAME)
     driver.find_element(By.NAME, "password").send_keys(PASSWORD)
     driver.find_element(By.ID, "login").click()
 
-    dismiss_alert(driver)  # <-- In case alert pops right after clicking login
+    dismiss_alert(driver)
 
-    # Wait until redirected
-    WebDriverWait(driver, 10).until(lambda d: "menu.php" in d.current_url or "Dashboard" in d.page_source)
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: "menu.php" in d.current_url or "Dashboard" in d.page_source
+        )
+    except TimeoutException:
+        print("❌ Login failed or server unresponsive.")
+        raise RuntimeError("Login failed")
 
-    clear_first_time_overlays(driver)  # All modals/panels/etc
-
+    clear_first_time_overlays(driver)
     print("✅ Login complete and overlays cleared.")
+
 
 if __name__ == "__main__":
     log_file = "calendarbuddy_crashlog.txt"
