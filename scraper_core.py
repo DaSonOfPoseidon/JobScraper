@@ -120,13 +120,21 @@ def process_job_entries(job):
     cid = job.get("cid")
     name = job.get("name")
     time_slot = job.get("time")
-    customer_url = CUSTOMER_URL_TEMPLATE.format(cid)
 
     try:
+        # Always start from root page to check login state
+        driver.get("http://inside.sockettelecom.com/")
+        if "login.php" in driver.current_url or "Username" in driver.page_source:
+            print(f"🔐 Login required")
+            handle_login(driver)
+        else:
+            print(f"✅ Session already active")
+
+        # Now go to the customer page
+        customer_url = CUSTOMER_URL_TEMPLATE.format(cid)
         driver.get(customer_url)
         print(f"🌐 Loaded customer page for CID {cid}: {driver.current_url}")
 
-        handle_login(driver)
         clear_first_time_overlays(driver)
 
         driver.switch_to.default_content()
