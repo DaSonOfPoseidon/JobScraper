@@ -152,12 +152,13 @@ def export_txt(jobs, filename="calendar_output.txt"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
+
     with open(filename, "w") as f:
         for company, days in jobs_by_company.items():
             f.write(f"{company}\n\n")
             for date, entries in sorted(days.items()):
                 f.write(f"{date}\n")
-                for job in entries:
+                for job in sorted(entries, key=lambda j: j['time']):
                     f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
                 f.write("\n")
             f.write("\n")
@@ -166,17 +167,20 @@ def export_excel(jobs, filename="calendar_output.xlsx"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
+
     rows = []
     for company, days in jobs_by_company.items():
         rows.append([company])
         for date, entries in sorted(days.items()):
             rows.append([date])
-            for job in entries:
+            for job in sorted(entries, key=lambda j: j['time']):
                 rows.append([job['time'], job['name'], job['cid'], job['type'], job['address'], f"WO {job['wo']}"])
             rows.append([])
         rows.append([])
+
     df = pd.DataFrame(rows)
     df.to_excel(filename, index=False, header=False)
+
     wb = load_workbook(filename)
     ws = wb.active
     for col in ws.columns:
