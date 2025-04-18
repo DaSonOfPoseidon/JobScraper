@@ -64,6 +64,13 @@ def clear_first_time_overlays(driver):
             time.sleep(0.25)
     print("❌ Could not switch to MainView iframe.")
 
+def get_sort_key(time_str):
+    time_str = time_str.strip()
+    hour = int(time_str.split(":")[0])
+    # Treat hours 1, 3, 5 as PM
+    if hour in [1, 2, 3, 4, 5]:
+        hour += 12
+    return hour
 
 def extract_cid_and_time(job_elem):
     try:
@@ -148,6 +155,12 @@ def extract_wo_date(driver):
         print(f"⚠️ Could not extract WO date: {e}")
     return "Unknown"
 
+def parse_time(t):
+    try:
+        return datetime.strptime(t.strip(), "%I:%M")
+    except:
+        return datetime.min
+
 def export_txt(jobs, filename="calendar_output.txt"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
@@ -158,10 +171,11 @@ def export_txt(jobs, filename="calendar_output.txt"):
             f.write(f"{company}\n\n")
             for date, entries in sorted(days.items()):
                 f.write(f"{date}\n")
-                for job in sorted(entries, key=lambda j: j['time']):
+                for job in sorted(entries, key=lambda j: get_sort_key(j['time'])):
                     f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
                 f.write("\n")
             f.write("\n")
+
 
 def export_excel(jobs, filename="calendar_output.xlsx"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
@@ -173,19 +187,29 @@ def export_excel(jobs, filename="calendar_output.xlsx"):
         rows.append([company])
         for date, entries in sorted(days.items()):
             rows.append([date])
-            for job in sorted(entries, key=lambda j: j['time']):
-                rows.append([job['time'], job['name'], job['cid'], job['type'], job['address'], f"WO {job['wo']}"])
+            for job in sorted(entries, key=lambda j: get_sort_key(j['time'])):
+                rows.append([
+                    job['time'],
+                    job['name'],
+                    job['cid'],
+                    job['type'],
+                    job['address'],
+                    f"WO {job['wo']}"
+                ])
             rows.append([])
         rows.append([])
 
+    # Write to Excel
     df = pd.DataFrame(rows)
     df.to_excel(filename, index=False, header=False)
 
+    # Autofit column widths
     wb = load_workbook(filename)
     ws = wb.active
     for col in ws.columns:
-        length = max(len(str(cell.value or "")) for cell in col)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = length + 2
+        max_length = max(len(str(cell.value or "")) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max_length + 2
     wb.save(filename)
 
 def save_cookies(driver, filename="cookies.pkl"):
