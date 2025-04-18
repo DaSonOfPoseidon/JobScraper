@@ -1,4 +1,4 @@
-#scraper_core.py
+# UPDATED scraper_core.py
 import os
 import time
 import traceback
@@ -15,8 +15,7 @@ from utils import (
     dismiss_alert, clear_first_time_overlays,
     get_work_order_url, get_job_type_and_address,
     get_contractor_assignments, extract_wo_date,
-    extract_cid_and_time, force_dismiss_any_alert,
-    handle_login, export_txt, export_excel
+    handle_login, force_dismiss_any_alert, extract_cid_and_time
 )
 
 load_dotenv(dotenv_path=".env")
@@ -47,7 +46,7 @@ def init_driver(headless=True):
         print("❌ ChromeDriver failed to initialize.")
         print("🔧 Possible issues: wrong ChromeDriver version, not executable, path mismatch.")
         raise e
-
+    
 def scrape_jobs(driver, mode="metadata", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
     driver.get(CALENDAR_URL)
     wait = WebDriverWait(driver, 30)
@@ -122,14 +121,7 @@ def process_job_entries(driver, job, log=print):
         driver.get(customer_url)
         log(f"🌐 Loading customer page for {cid}")
 
-        if "login.php" in driver.current_url or "Username" in driver.page_source:
-            handle_login(driver)
-            time.sleep(2)
-            driver.get(customer_url)
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "MainView")))
-            log("✅ Login complete and page loaded.")
-
-        clear_first_time_overlays(driver)
+        clear_first_time_overlays(driver) #10 second wait?
 
         try:
             driver.switch_to.default_content()
@@ -171,5 +163,5 @@ def process_job_entries(driver, job, log=print):
 
     except Exception as e:
         log(f"❌ Failed to process job for CID {cid}: {e}")
-        traceback.log_exc()
+        traceback.print_exc()
         return None
