@@ -249,12 +249,9 @@ def handle_login(driver):
 def perform_login(driver):
     driver.get("http://inside.sockettelecom.com/system/login.php")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-    dismiss_alert(driver)
     driver.find_element(By.NAME, "username").send_keys(USERNAME)
     driver.find_element(By.NAME, "password").send_keys(PASSWORD)
     driver.find_element(By.ID, "login").click()
-    dismiss_alert(driver)
-    WebDriverWait(driver, 10).until(lambda d: "menu.php" in d.current_url or "Dashboard" in d.page_source)
     clear_first_time_overlays(driver)
     print("✅ Login complete and overlays cleared.")
 
