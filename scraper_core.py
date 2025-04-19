@@ -3,7 +3,10 @@ import os
 import time
 import traceback
 from datetime import datetime
-from dotenv import load_dotenv
+from datetime import timedelta
+from dateutil import parser as dateparser
+from dotenv import load_dotenv, set_key
+from tkinter import Tk, messagebox, simpledialog
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -15,16 +18,12 @@ from utils import (
     dismiss_alert, clear_first_time_overlays,
     get_work_order_url, get_job_type_and_address,
     get_contractor_assignments, extract_wo_date,
-    handle_login, force_dismiss_any_alert, extract_cid_and_time
+    handle_login, force_dismiss_any_alert, extract_cid_and_time,
+    perform_login
 )
-
-load_dotenv(dotenv_path=".env")
 
 CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
 CUSTOMER_URL_TEMPLATE = "http://inside.sockettelecom.com/menu.php?coid=1&tabid=7&parentid=9&customerid={}"
-
-USERNAME = os.getenv("UNITY_USER")
-PASSWORD = os.getenv("PASSWORD")
 
 def init_driver(headless=True):
     options = Options()
@@ -47,40 +46,90 @@ def init_driver(headless=True):
         print("🔧 Possible issues: wrong ChromeDriver version, not executable, path mismatch.")
         raise e
     
-def scrape_jobs(driver, mode="metadata", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
+def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
+    CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
     driver.get(CALENDAR_URL)
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 20)
+
     force_dismiss_any_alert(driver)
 
     if "login.php" in driver.current_url or "Username" in driver.page_source:
-        log("🔐 Login screen detected before clicking Week button.")
+        log("🔐 Login screen detected. Logging in...")
         handle_login(driver)
         driver.get(CALENDAR_URL)
 
+    # Step 1: Set View
     try:
-        week_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'week')]")))
-        week_button.click()
+        if mode == "week":
+            view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaWeek-button")
+        else:
+            view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaDay-button")
+        view_button.click()
         time.sleep(1)
         wait.until(EC.invisibility_of_element_located((By.ID, "spinner")))
-        log("✅ Switched to Week View.")
+        log(f"✅ Switched to {'Week' if mode == 'week' else 'Day'} View.")
     except Exception as e:
-        log(f"⚠️ Could not switch to Week View: {e}")
+        log(f"⚠️ Could not switch view: {e}")
 
-    try:
-        next_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.fc-next-button")))
-        next_button.click()
-        time.sleep(1)
-        wait.until(EC.invisibility_of_element_located((By.ID, "spinner")))
-        log("✅ Navigated to Next Week.")
-    except Exception as e:
-        log(f"⚠️ Could not advance to next week: {e}")
+    # Step 2: Navigate to correct week/day
+    if selected_day:
+        try:
+            raw_selected_date = dateparser.parse(selected_day).date()
 
+            # If mode is week, round down to the Sunday of that week
+            if mode == "week":
+                weekday = raw_selected_date.weekday()  # 0 = Monday, 6 = Sunday
+                days_to_sunday = (raw_selected_date.weekday() + 1) % 7
+                target_date = raw_selected_date - timedelta(days=days_to_sunday)
+            else:
+                target_date = raw_selected_date
+
+
+            def get_current_calendar_date():
+                try:
+                    header_text = driver.find_element(By.CSS_SELECTOR, ".fc-center h2").text.strip()
+                    # Handle week ranges like "Apr 13 - 19, 2025"
+                    if "-" in header_text:
+                        parts = header_text.replace("–", "-").split("-")
+                        if len(parts) == 2:
+                            start_str = parts[0].strip()
+                            end_str = parts[1].strip()
+                            if "," not in end_str:
+                                end_str += ", " + str(datetime.now().year)
+                            return dateparser.parse(start_str).date()
+                    return dateparser.parse(header_text, fuzzy=True).date()
+                except Exception:
+                    return None
+
+            current_date = get_current_calendar_date()
+            nav_tries = 0
+
+            while current_date and current_date != target_date and nav_tries < 15:
+                if current_date < target_date:
+                    driver.find_element(By.CSS_SELECTOR, "button.fc-next-button").click()
+                else:
+                    driver.find_element(By.CSS_SELECTOR, "button.fc-prev-button").click()
+
+                time.sleep(1)
+                current_date = get_current_calendar_date()
+                nav_tries += 1
+
+            if current_date == target_date:
+                log(f"📆 Calendar now displaying {current_date}")
+            else:
+                log(f"⚠️ Could not align calendar to {target_date} after {nav_tries} tries.")
+
+        except Exception as e:
+            log(f"❌ Failed to navigate to selected day: {e}")
+
+    # Step 3: Wait for jobs to load
     try:
         wait.until(lambda d: any("Residential Fiber Install" in el.text for el in d.find_elements(By.CSS_SELECTOR, "a.fc-time-grid-event")))
         log("✅ Jobs loaded and ready to scrape.")
     except:
         log("⚠️ No 'Residential Fiber Install' jobs detected.")
 
+    # Step 4: Extract metadata
     job_links = driver.find_elements(By.CSS_SELECTOR, "a.fc-time-grid-event")
     results = []
     counter = 0
@@ -93,7 +142,6 @@ def scrape_jobs(driver, mode="metadata", imported_jobs=None, selected_day=None, 
         if not cid:
             continue
 
-        # Allow duplicates in scraping - address matching is unavailable at this stage
         counter += 1
         timestamp = datetime.now().strftime("[%H:%M:%S]")
         log(f"{timestamp} {counter} - {cid} queued")
@@ -165,3 +213,43 @@ def process_job_entries(driver, job, log=print):
         log(f"❌ Failed to process job for CID {cid}: {e}")
         traceback.print_exc()
         return None
+
+def check_env_or_prompt_login(log):
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    username = os.getenv("UNITY_USER")
+    password = os.getenv("PASSWORD")
+
+    if username and password:
+        log("🔐 Loaded stored credentials.")
+        return username, password
+
+    while True:
+        username, password = prompt_for_credentials()
+        if not username or not password:
+            messagebox.showerror("Login Cancelled", "Login is required to continue.")
+            return None, None
+
+        # ✅ Do NOT try logging in here — just trust them until used
+        save_env_credentials(username, password)
+        log("✅ Credentials captured and saved to .env.")
+        return username, password
+
+def prompt_for_credentials():
+    login_window = Tk()
+    login_window.withdraw()
+
+    USERNAME = simpledialog.askstring("Login", "Enter your USERNAME:", parent=login_window)
+    PASSWORD = simpledialog.askstring("Login", "Enter your PASSWORD:", parent=login_window, show="*")
+
+    login_window.destroy()
+    return USERNAME, PASSWORD
+
+def save_env_credentials(USERNAME, PASSWORD):
+    dotenv_path = ".env"
+    if not os.path.exists(dotenv_path):
+        with open(dotenv_path, "w") as f:
+            f.write("")
+    set_key(dotenv_path, "UNITY_USER", USERNAME)
+    set_key(dotenv_path, "PASSWORD", PASSWORD)

@@ -1,8 +1,7 @@
 # main.py
-from gui import CalendarBuddyGUI
-import tkinter as tk
 import traceback
 from tkinterdnd2 import TkinterDnD
+from gui import CalendarBuddyGUI
 
 if __name__ == "__main__":
     try:

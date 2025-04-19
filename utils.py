@@ -9,6 +9,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -161,7 +162,7 @@ def parse_time(t):
     except:
         return datetime.min
 
-def export_txt(jobs, filename="calendar_output.txt"):
+def export_txt(jobs, filename="Outputs/Jobs.txt"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
@@ -176,8 +177,7 @@ def export_txt(jobs, filename="calendar_output.txt"):
                 f.write("\n")
             f.write("\n")
 
-
-def export_excel(jobs, filename="calendar_output.xlsx"):
+def export_excel(jobs, filename="Outputs/Jobs.txt"):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
@@ -234,7 +234,7 @@ def load_cookies(driver, filename="cookies.pkl"):
 def handle_login(driver):
     driver.get("http://inside.sockettelecom.com/")
     if load_cookies(driver):
-        if "login.php" in driver.current_url or "Username" in driver.page_source:
+        if "login.php" in driver.current_url or "USERNAME" in driver.page_source:
             perform_login(driver)
             time.sleep(2)
             save_cookies(driver)
@@ -246,14 +246,36 @@ def handle_login(driver):
         time.sleep(2)
         save_cookies(driver)
 
-def perform_login(driver):
+def perform_login(driver, username=None, password=None):
+    username = username or USERNAME
+    password = password or PASSWORD
+
     driver.get("http://inside.sockettelecom.com/system/login.php")
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-    driver.find_element(By.NAME, "username").send_keys(USERNAME)
-    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
+    driver.find_element(By.NAME, "username").clear()
+    driver.find_element(By.NAME, "username").send_keys(username)
+    driver.find_element(By.NAME, "password").clear()
+    driver.find_element(By.NAME, "password").send_keys(password)
     driver.find_element(By.ID, "login").click()
+
     clear_first_time_overlays(driver)
+
+    try:
+        # Wait up to 3s for the error message to appear
+        WebDriverWait(driver, 3).until(
+            EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Incorrect username or password')]"))
+        )
+        print("❌ Login failed (error message detected).")
+        return False
+    except TimeoutException:
+        pass  # No error message found, continue
+
+    if "login.php" in driver.current_url:
+        print("❌ Login failed (still on login.php).")
+        return False
+
     print("✅ Login complete and overlays cleared.")
+    return True
 
 def parse_imported_jobs(file_path):
     jobs = []
@@ -289,3 +311,36 @@ def parse_imported_jobs(file_path):
         print(f"❌ Failed to parse imported file: {e}")
         return None
     return jobs
+
+def generate_diff_report_and_return(imported_jobs, scraped_jobs):
+    from collections import defaultdict
+    from datetime import datetime
+
+    def job_key(job):
+        return f"{job.get('cid')}|{job.get('time')}"
+
+    old_jobs = {job_key(job): job for job in imported_jobs}
+    new_jobs = {job_key(job): job for job in scraped_jobs}
+
+    old_cids = {job.get("cid"): job for job in imported_jobs}
+    new_cids = {job.get("cid"): job for job in scraped_jobs}
+
+    added = [job for k, job in new_jobs.items() if k not in old_jobs]
+    removed = [job for k, job in old_jobs.items() if k not in new_jobs]
+    moved = [(old_cids[cid], new_cids[cid]) for cid in old_cids if cid in new_cids and job_key(old_cids[cid]) != job_key(new_cids[cid])]
+
+    # Write report
+    os.makedirs("Outputs", exist_ok=True)
+    filename_tag = datetime.now().strftime("%m%d%H%M")
+    with open(f"Outputs/Changes{filename_tag}.txt", "w") as f:
+        f.write("=== Added ===\n")
+        for job in added:
+            f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
+        f.write("\n=== Removed ===\n")
+        for job in removed:
+            f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
+        f.write("\n=== Moved ===\n")
+        for old, new in moved:
+            f.write(f"CID {old['cid']}: {old['time']} → {new['time']} | {old['address']} → {new['address']}\n")
+
+    return added, removed, moved
