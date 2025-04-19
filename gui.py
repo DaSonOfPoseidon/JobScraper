@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import tkinter as tk
+from tkinter.ttk import Progressbar
 from tkinter import filedialog, messagebox, Label, Button, Text, Scrollbar, END
 from tkinterdnd2 import DND_FILES
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,7 +12,7 @@ from math import ceil
 from utils import parse_imported_jobs, handle_login, export_txt, export_excel, load_cookies, save_cookies
 from scraper_core import scrape_jobs, process_job_entries, init_driver
 
-MAX_WORKERS_DEFAULT = 3
+MAX_WORKERS_DEFAULT = 6
 
 class CalendarBuddyGUI:
     def __init__(self, root):
@@ -33,6 +34,10 @@ class CalendarBuddyGUI:
         self.test_checkbox = tk.Checkbutton(root, text="Test Mode", variable=self.test_mode)
         self.test_checkbox.grid(row=1, column=0, sticky="w", padx=10)
 
+        self.export_excel = tk.BooleanVar(value=False)
+        self.excel_checkbox = tk.Checkbutton(root, text="Export Excel", variable=self.export_excel)
+        self.excel_checkbox.grid(row=3, column=2, sticky="e", padx=10)
+
         self.limit_label = Label(root, text="Test Mode Limit:")
         self.limit_label.grid(row=1, column=1, sticky="e")
         self.limit_spinbox = tk.Spinbox(root, from_=1, to=500, textvariable=self.test_limit, width=5)
@@ -40,7 +45,7 @@ class CalendarBuddyGUI:
 
         self.worker_label = Label(root, text="Worker Processes:")
         self.worker_label.grid(row=2, column=0, sticky="w", padx=10)
-        self.worker_spinbox = tk.Spinbox(root, from_=1, to=8, textvariable=self.worker_count, width=5)
+        self.worker_spinbox = tk.Spinbox(root, from_=1, to=32, textvariable=self.worker_count, width=5)
         self.worker_spinbox.grid(row=2, column=1, sticky="w")
 
         self.open_button = Button(root, text="Or Click to Browse", command=self.browse_file)
@@ -58,6 +63,13 @@ class CalendarBuddyGUI:
         self.scrollbar = Scrollbar(root, command=self.log_text.yview)
         self.scrollbar.grid(row=4, column=3, sticky="ns", pady=(5, 0))
         self.log_text.config(yscrollcommand=self.scrollbar.set)
+
+        self.progress_var = tk.IntVar()
+        self.progress_bar = Progressbar(root, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 0), sticky="ew")
+
+        self.counter_label = Label(root, text="0 of 0 completed")
+        self.counter_label.grid(row=5, column=2, padx=10, sticky="e")
 
     def handle_drop(self, event):
         self.dropped_file_path = event.data.strip('{}')
@@ -93,6 +105,7 @@ class CalendarBuddyGUI:
         t0 = time.time()
         self.log("🧪 About to initialize driver...")
 
+
         try:
             shared_driver = init_driver(headless=True)
             self.log("✅ Driver initialized.")
@@ -119,9 +132,14 @@ class CalendarBuddyGUI:
             return
 
         results = []
+        incomplete = []
         lock = threading.Lock()
         total_jobs = len(raw_jobs)
         completed = [0]
+
+        self.progress_var.set(0)
+        self.progress_bar["maximum"] = total_jobs
+        self.counter_label.config(text=f"0 of {total_jobs} completed")
 
         def thread_task(job_batch):
             local_driver = init_driver(headless=True)
@@ -129,13 +147,20 @@ class CalendarBuddyGUI:
                 handle_login(local_driver)
                 save_cookies(local_driver)
             try:
+
+                
                 for job in job_batch:
                     result = process_job_entries(local_driver, job, log=self.log)
                     with lock:
                         completed[0] += 1
-                        self.log(f"✅ Completed {completed[0]}/{total_jobs}")
+                        self.progress_var.set(completed[0])
+                        self.counter_label.config(text=f"{completed[0]} of {total_jobs} completed")
                         if result:
                             results.append(result)
+                        else:
+                            job["error"] = "Failed to parse job details"
+                            incomplete.append(job)
+
             except Exception as e:
                 self.log(f"❌ Thread batch failed: {e}")
                 import traceback
@@ -154,7 +179,14 @@ class CalendarBuddyGUI:
                 pass
 
         export_txt(results)
-        export_excel(results)
+        if self.export_excel.get():
+            export_excel(results)
+
+        if incomplete:
+            with open("incomplete_output.txt", "w") as f:
+                for job in incomplete:
+                    f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
+            self.log(f"⚠️ {len(incomplete)} jobs could not be parsed. See 'incomplete_output.txt'.")
 
         self.log(f"✅ Done. Total Processed Jobs: {len(results)}")
         self.log(f"⏱️ Total time: {time.time() - t0:.2f} seconds")
