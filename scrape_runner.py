@@ -7,7 +7,7 @@ from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper_core import scrape_jobs, init_driver, process_job_entries
-from utils import perform_login, export_txt, export_excel, generate_diff_report_and_return,  handle_login, load_cookies, save_cookies, check_env_or_prompt_login
+from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login
 
 def run_scrape(app):
     app.log("🚀 Starting full scrape...")
@@ -45,13 +45,7 @@ def run_scrape(app):
 
     def thread_task(job_batch):
         local_driver = init_driver(headless=True)
-        if not load_cookies(local_driver):
-            username, password = check_env_or_prompt_login(app.log)
-            if not username:
-                return  # user cancelled or login failed
-
-            perform_login(driver, username, password)
-            save_cookies(local_driver)
+        handle_login(app.log)
         try:
             for job in job_batch:
                 result = process_job_entries(local_driver, job, log=app.log)
@@ -182,9 +176,7 @@ def run_update(app):
 
     def thread_task(job_batch):
         local_driver = init_driver(headless=True)
-        if not load_cookies(local_driver):
-            handle_login(local_driver)
-            save_cookies(local_driver)
+        handle_login(app.log)
         try:
             for job in job_batch:
                 result = process_job_entries(local_driver, job, log=app.log)

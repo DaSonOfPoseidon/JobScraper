@@ -39,7 +39,7 @@ def check_env_or_prompt_login(log=print):
     password = os.getenv("PASSWORD")
 
     if username and password:
-        print("🔐 Loaded stored credentials.")
+        log("✅ Loaded stored credentials.")
         return username, password
 
     while True:
@@ -49,7 +49,7 @@ def check_env_or_prompt_login(log=print):
             return None, None
 
         save_env_credentials(username, password)
-        print("✅ Credentials captured and saved to .env.")
+        log("✅ Credentials captured and saved to .env.")
         return username, password
 
 
@@ -83,7 +83,7 @@ def handle_login(driver, log=print):
             return
 
     # === Try saved creds and prompt until success ===
-    while True:
+    while "login.php" in driver.current_url or "Username" in driver.page_source:
         username, password = check_env_or_prompt_login(log)
         if not username or not password:
             log("❌ Login cancelled.")
@@ -91,17 +91,13 @@ def handle_login(driver, log=print):
 
         perform_login(driver, username, password)
         time.sleep(2)
+
         if not login_failed(driver):
             save_cookies(driver)
             log("✅ Logged in with username/password.")
             return
         else:
-            log("❌ Login failed. Prompting for new credentials.")
-            username, password = prompt_for_credentials()
-            if not username or not password:
-                messagebox.showerror("Login Cancelled", "Login is required to continue.")
-                return
-            save_env_credentials(username, password)
+            log("❌ Login failed. Re-prompting...")
 
 def perform_login(driver, USERNAME, PASSWORD):
     driver.get("http://inside.sockettelecom.com/system/login.php")

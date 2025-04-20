@@ -1,5 +1,6 @@
 # UPDATED scraper_core.py
 import os
+from os import wait
 import time
 import traceback
 from datetime import datetime
@@ -19,7 +20,6 @@ from utils import (
     get_work_order_url, get_job_type_and_address,
     get_contractor_assignments, extract_wo_date,
     handle_login, force_dismiss_any_alert, extract_cid_and_time,
-    perform_login
 )
 
 CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
@@ -48,17 +48,10 @@ def init_driver(headless=True):
         raise e
     
 def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
-    CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
     driver.get(CALENDAR_URL)
-    wait = WebDriverWait(driver, 20)
-
-    force_dismiss_any_alert(driver)
-
-    if "login.php" in driver.current_url or "Username" in driver.page_source:
-        log("🔐 Login screen detected. Logging in...")
-        handle_login(driver)
-        driver.get(CALENDAR_URL)
-
+    handle_login(log)
+    driver.get(CALENDAR_URL)
+    
     # Set View (Week or Day)
     try:
         if mode == "week":
@@ -67,7 +60,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
             view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaDay-button")
         view_button.click()
         time.sleep(1)
-        wait.until(EC.invisibility_of_element_located((By.ID, "spinner")))
+        os.wait.until(EC.invisibility_of_element_located((By.ID, "spinner")))
         log(f"✅ Switched to {'Week' if mode == 'week' else 'Day'} View.")
     except Exception as e:
         log(f"⚠️ Could not switch view: {e}")
