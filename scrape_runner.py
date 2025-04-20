@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from scraper_core import scrape_jobs, init_driver, process_job_entries, check_env_or_prompt_login
-from utils import perform_login, export_txt, export_excel, generate_diff_report_and_return,  handle_login, load_cookies, save_cookies
+from scraper_core import scrape_jobs, init_driver, process_job_entries
+from utils import perform_login, export_txt, export_excel, generate_diff_report_and_return,  handle_login, load_cookies, save_cookies, check_env_or_prompt_login
 
 def run_scrape(app):
     app.log("🚀 Starting full scrape...")
@@ -15,11 +15,6 @@ def run_scrape(app):
 
     selected_day = app.base_date.get()
     mode = app.scrape_mode_choice.get()
-
-    username, password = check_env_or_prompt_login(app.log)
-    if not (username and password):
-        app.log("❌ Login cancelled.")
-        return
 
     try:
         driver = init_driver(headless=True)
@@ -77,6 +72,8 @@ def run_scrape(app):
     batch_size = ceil(len(raw_jobs) / num_threads)
     batches = [raw_jobs[i:i + batch_size] for i in range(0, len(raw_jobs), batch_size)]
 
+    app.log("Processing Jobs...")
+
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [executor.submit(thread_task, batch) for batch in batches]
         for _ in as_completed(futures):
@@ -102,8 +99,13 @@ def run_scrape(app):
     if app.export_excel.get():
         export_excel(results, filename=excel_filename)
 
+    start_date = sunday
+    end_date = saturday
+
+    output_tag = start_date.strftime("%m%d") if start_date == end_date else f"{start_date.strftime('%m%d')}-{end_date.strftime('%m%d')}"
+
     if incomplete:
-        with open(os.path.join(output_dir, "UnparsedJobs.txt"), "w") as f:
+        with open(os.path.join(output_dir, f"UnparsedJobs{output_tag}.txt"), "w") as f:
             for job in incomplete:
                 f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
 
@@ -160,7 +162,7 @@ def run_update(app):
         app.log("⚠️ No metadata jobs found.")
         return
 
-    added, removed, moved = generate_diff_report_and_return(app.imported_jobs, scraped_metadata)
+    added, removed, moved = generate_diff_report_and_return(app.imported_jobs, scraped_metadata, filename_tag)
     jobs_to_scrape = added + [new for _, new in moved]
 
     app.log(f"🔍 Diff results — {len(added)} added, {len(removed)} removed, {len(moved)} moved.")
@@ -221,7 +223,8 @@ def run_update(app):
         export_excel(results, filename=excel_filename)
 
     if incomplete:
-        with open(os.path.join(output_dir, "UnparsedJobs.txt"), "w") as f:
+        unparsed_file = os.path.join(output_dir, f"UnparsedJobs{filename_tag}.txt")
+        with open(unparsed_file, "w") as f:
             for job in incomplete:
                 f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
 

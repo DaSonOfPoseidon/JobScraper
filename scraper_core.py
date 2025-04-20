@@ -38,8 +38,9 @@ def init_driver(headless=True):
         options.add_argument("--disable-dev-shm-usage")
 
     try:
-        service = Service("./chromedriver.exe")
-        service.creationflags = 0x08000000  # CREATE_NO_WINDOW
+        driver_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../chromedriver.exe"))
+        service = Service(driver_path)
+        service.creationflags = 0x08000000 
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
         print("❌ ChromeDriver failed to initialize.")
@@ -58,7 +59,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
         handle_login(driver)
         driver.get(CALENDAR_URL)
 
-    # Step 1: Set View
+    # Set View (Week or Day)
     try:
         if mode == "week":
             view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaWeek-button")
@@ -71,7 +72,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
     except Exception as e:
         log(f"⚠️ Could not switch view: {e}")
 
-    # Step 2: Navigate to correct week/day
+    # Navigate to correct week/day
     if selected_day:
         try:
             raw_selected_date = dateparser.parse(selected_day).date()
@@ -156,7 +157,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
             log("🔬 Test mode: Job limit reached. Exiting early.")
             break
 
-    log(f"✅ Queued {len(results)} metadata jobs for processing.")
+    log(f"✅ Queued {len(results)} jobs for processing.")
     return results
 
 def process_job_entries(driver, job, log=print):
@@ -167,7 +168,7 @@ def process_job_entries(driver, job, log=print):
 
     try:
         driver.get(customer_url)
-        log(f"🌐 Loading customer page for {cid}")
+        #log(f"🌐 Loading customer page for {cid}")
 
         clear_first_time_overlays(driver) #10 second wait?
 
@@ -183,11 +184,11 @@ def process_job_entries(driver, job, log=print):
             workorder_url, wo_number = get_work_order_url(driver)
             if workorder_url:
                 break
-            log(f"🔁 Retry {attempt + 1}/3: No WO yet for CID {cid}")
+            #log(f"🔁 Retry {attempt + 1}/3: No WO yet for CID {cid}")
             time.sleep(1)
 
         if not workorder_url:
-            log(f"⚠️ Still no WO found for {cid} after retries.")
+            log(f"⚠️ No WO found for {cid}.")
             return None
 
         driver.get(workorder_url)
@@ -213,43 +214,3 @@ def process_job_entries(driver, job, log=print):
         log(f"❌ Failed to process job for CID {cid}: {e}")
         traceback.print_exc()
         return None
-
-def check_env_or_prompt_login(log):
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    username = os.getenv("UNITY_USER")
-    password = os.getenv("PASSWORD")
-
-    if username and password:
-        log("🔐 Loaded stored credentials.")
-        return username, password
-
-    while True:
-        username, password = prompt_for_credentials()
-        if not username or not password:
-            messagebox.showerror("Login Cancelled", "Login is required to continue.")
-            return None, None
-
-        # ✅ Do NOT try logging in here — just trust them until used
-        save_env_credentials(username, password)
-        log("✅ Credentials captured and saved to .env.")
-        return username, password
-
-def prompt_for_credentials():
-    login_window = Tk()
-    login_window.withdraw()
-
-    USERNAME = simpledialog.askstring("Login", "Enter your USERNAME:", parent=login_window)
-    PASSWORD = simpledialog.askstring("Login", "Enter your PASSWORD:", parent=login_window, show="*")
-
-    login_window.destroy()
-    return USERNAME, PASSWORD
-
-def save_env_credentials(USERNAME, PASSWORD):
-    dotenv_path = ".env"
-    if not os.path.exists(dotenv_path):
-        with open(dotenv_path, "w") as f:
-            f.write("")
-    set_key(dotenv_path, "UNITY_USER", USERNAME)
-    set_key(dotenv_path, "PASSWORD", PASSWORD)

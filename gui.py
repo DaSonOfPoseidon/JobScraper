@@ -33,9 +33,6 @@ class CalendarBuddyGUI:
         self.label.drop_target_register(DND_FILES)
         self.label.dnd_bind('<<Drop>>', self.handle_drop)
 
-        browse_button = ttk.Button(file_frame, text="Browse File", command=self.browse_file)
-        browse_button.pack(padx=10, pady=(0, 5))
-
         self.file_label = ttk.Label(file_frame, text="No file loaded.", foreground="gray")
         self.file_label.pack(padx=10, pady=(0, 5))
 
