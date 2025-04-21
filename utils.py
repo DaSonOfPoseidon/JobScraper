@@ -3,7 +3,7 @@ import os
 import re
 import time
 import pickle
-from tkinter import messagebox, simpledialog
+from tkinter import Tk, messagebox, simpledialog
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict

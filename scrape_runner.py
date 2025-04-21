@@ -45,7 +45,7 @@ def run_scrape(app):
 
     def thread_task(job_batch):
         local_driver = init_driver(headless=True)
-        handle_login(app.log)
+        handle_login(local_driver)
         try:
             for job in job_batch:
                 result = process_job_entries(local_driver, job, log=app.log)
@@ -176,7 +176,7 @@ def run_update(app):
 
     def thread_task(job_batch):
         local_driver = init_driver(headless=True)
-        handle_login(app.log)
+        handle_login(local_driver, log=app.log)
         try:
             for job in job_batch:
                 result = process_job_entries(local_driver, job, log=app.log)

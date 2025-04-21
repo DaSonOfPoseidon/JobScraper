@@ -1,6 +1,5 @@
 # UPDATED scraper_core.py
 import os
-from os import wait
 import time
 import traceback
 from datetime import datetime
@@ -49,7 +48,7 @@ def init_driver(headless=True):
     
 def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
     driver.get(CALENDAR_URL)
-    handle_login(log)
+    handle_login(driver, log)
     driver.get(CALENDAR_URL)
     
     # Set View (Week or Day)
@@ -60,7 +59,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
             view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaDay-button")
         view_button.click()
         time.sleep(1)
-        os.wait.until(EC.invisibility_of_element_located((By.ID, "spinner")))
+        WebDriverWait(driver, 30, poll_frequency=0.25).until(EC.invisibility_of_element_located((By.ID, "spinner")))
         log(f"✅ Switched to {'Week' if mode == 'week' else 'Day'} View.")
     except Exception as e:
         log(f"⚠️ Could not switch view: {e}")
@@ -118,7 +117,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
 
     # Step 3: Wait for jobs to load
     try:
-        wait.until(lambda d: any("Residential Fiber Install" in el.text for el in d.find_elements(By.CSS_SELECTOR, "a.fc-time-grid-event")))
+        WebDriverWait(driver, 10).until(lambda d: any("Residential Fiber Install" in el.text for el in d.find_elements(By.CSS_SELECTOR, "a.fc-time-grid-event")))
         log("✅ Jobs loaded and ready to scrape.")
     except:
         log("⚠️ No 'Residential Fiber Install' jobs detected.")
