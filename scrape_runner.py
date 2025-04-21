@@ -81,6 +81,7 @@ def run_scrape(app):
         date_str = base_date.strftime("%m%d")
         txt_filename = os.path.join(output_dir, f"Jobs{date_str}.txt")
         excel_filename = os.path.join(output_dir, f"Jobs{date_str}.xlsx")
+        start_date = end_date = base_date
     else:
         base_date = datetime.strptime(selected_day, "%m/%d/%y")
         sunday = base_date - timedelta(days=(base_date.weekday() + 1) % 7)
@@ -88,13 +89,12 @@ def run_scrape(app):
         range_str = f"{sunday.strftime('%m%d')}-{saturday.strftime('%m%d')}"
         txt_filename = os.path.join(output_dir, f"Jobs{range_str}.txt")
         excel_filename = os.path.join(output_dir, f"Jobs{range_str}.xlsx")
+        start_date = sunday
+        end_date = saturday
 
     export_txt(results, filename=txt_filename)
     if app.export_excel.get():
         export_excel(results, filename=excel_filename)
-
-    start_date = sunday
-    end_date = saturday
 
     output_tag = start_date.strftime("%m%d") if start_date == end_date else f"{start_date.strftime('%m%d')}-{end_date.strftime('%m%d')}"
 
