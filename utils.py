@@ -5,6 +5,7 @@ import time
 import pickle
 from tkinter import Tk, messagebox, simpledialog
 import pandas as pd
+import threading
 from datetime import datetime
 from collections import defaultdict
 from dotenv import load_dotenv, set_key
@@ -13,6 +14,8 @@ from openpyxl import load_workbook
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+cookie_lock = threading.Lock()
 
 # Setup + Creds
 def prompt_for_credentials():
@@ -55,14 +58,18 @@ def check_env_or_prompt_login(log=print):
 
 # Login + Session
 def save_cookies(driver, filename="cookies.pkl"):
-    with open(filename, "wb") as f:
-        pickle.dump(driver.get_cookies(), f)
+    with cookie_lock:
+        with open(filename, "wb") as f:
+            pickle.dump(driver.get_cookies(), f)
+
 
 def load_cookies(driver, filename="cookies.pkl"):
     if not os.path.exists(filename): return False
     try:
-        with open(filename, "rb") as f:
-            cookies = pickle.load(f)
+        with cookie_lock:
+            with open(filename, "rb") as f:
+                cookies = pickle.load(f)
+
         driver.get("http://inside.sockettelecom.com/")
         for cookie in cookies:
             driver.add_cookie(cookie)
@@ -73,6 +80,7 @@ def load_cookies(driver, filename="cookies.pkl"):
         if os.path.exists(filename): os.remove(filename)
         return False
 
+
 def handle_login(driver, log=print):
     driver.get("http://inside.sockettelecom.com/")
 
@@ -81,6 +89,8 @@ def handle_login(driver, log=print):
             log("✅ Session restored via cookies.")
             clear_first_time_overlays(driver)
             return
+        else:
+            print("⚠️ Cookie session invalid — retrying with credentials...")
 
     # === Try saved creds and prompt until success ===
     while "login.php" in driver.current_url or "Username" in driver.page_source:
@@ -90,7 +100,7 @@ def handle_login(driver, log=print):
             return
 
         perform_login(driver, username, password)
-        time.sleep(2)
+        WebDriverWait(driver, 10).until(lambda d: "menu.php" in d.current_url or "calendar" in d.current_url)
 
         if not login_failed(driver):
             save_cookies(driver)

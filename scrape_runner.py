@@ -200,8 +200,11 @@ def run_update(app):
     app.log(f"🛠 Scraping {total_jobs} changed jobs with {num_threads} threads...")
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [executor.submit(thread_task, batch) for batch in batches]
-        for _ in as_completed(futures):
-            pass
+        for future in as_completed(futures):
+            try:
+                future.result()  # Catch and log thread exceptions
+            except Exception as e:
+                app.log(f"❌ Thread failed: {e}")
 
     output_dir = "Outputs"
     os.makedirs(output_dir, exist_ok=True)

@@ -47,7 +47,6 @@ def init_driver(headless=True):
         raise e
     
 def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
-    driver.get(CALENDAR_URL)
     handle_login(driver, log)
     driver.get(CALENDAR_URL)
     
