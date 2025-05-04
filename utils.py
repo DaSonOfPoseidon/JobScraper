@@ -62,7 +62,6 @@ def save_cookies(driver, filename="cookies.pkl"):
         with open(filename, "wb") as f:
             pickle.dump(driver.get_cookies(), f)
 
-
 def load_cookies(driver, filename="cookies.pkl"):
     if not os.path.exists(filename): return False
     try:
@@ -201,7 +200,7 @@ def get_contractor_assignments(driver):
         print(f"❌ Could not find contractor name: {e}")
         return "Unknown"
 
-def get_work_order_url(driver):
+def get_work_order_url(driver, log=None):
     try:
         dismiss_alert(driver)
         WebDriverWait(driver, 5, poll_frequency=0.05).until(lambda d: d.find_element(By.ID, "workShow").is_displayed())
@@ -217,15 +216,25 @@ def get_work_order_url(driver):
             url = cols[4].find_element(By.TAG_NAME, "a").get_attribute("href")
             if "install" in desc and "fiber" in desc:
                 install_wos.append((int(wo_num), status, url))
-        for wo in install_wos:
-            if wo[1] == "in process":
-                return wo[2], wo[0]
-        if install_wos:
-            return max(install_wos, key=lambda x: x[0])[2], max(install_wos, key=lambda x: x[0])[0]
+
+        in_process_wos = [wo for wo in install_wos if "in process" in wo[1]]
+        if in_process_wos:
+            return max(in_process_wos, key=lambda x: x[0])[2], max(in_process_wos, key=lambda x: x[0])[0]
+
+        open_wos = [wo for wo in install_wos if "open" in wo[1] or "scheduled" in wo[1]]
+        if open_wos:
+            return max(open_wos, key=lambda x: x[0])[2], max(open_wos, key=lambda x: x[0])[0]
+
+        if log:
+            log("⚠️ No valid 'In Process' or 'Open' fiber installs found. Skipping job.")
         return None, None
     except Exception as e:
-        print(f"❌ Could not find work order URL: {e}")
+        if log:
+            log(f"❌ Error finding work order URL: {e}")
+        else:
+            print(f"❌ Error finding work order URL: {e}")
         return None, None
+
 
 def get_job_type_and_address(driver):
     wait = WebDriverWait(driver, 10)

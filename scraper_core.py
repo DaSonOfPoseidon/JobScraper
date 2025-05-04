@@ -172,7 +172,7 @@ def process_job_entries(driver, job, log=print):
 
         workorder_url, wo_number = None, None
         for attempt in range(3):
-            workorder_url, wo_number = get_work_order_url(driver)
+            workorder_url, wo_number = get_work_order_url(driver, log)
             if workorder_url:
                 break
             #log(f"🔁 Retry {attempt + 1}/3: No WO yet for CID {cid}")
