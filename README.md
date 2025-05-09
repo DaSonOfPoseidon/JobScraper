@@ -12,13 +12,22 @@ This tool automates scraping of Residential Fiber Install jobs from the internal
 
 * **Thread Count**: Adjustable up to 32; However, 8 threads on a mid‑range PC (16 GB RAM, modern i5) will fully utilize resources.
 * **Excel Export**: Optionally output to `.xlsx` with auto‑adjusted column widths.
-* **Calendar Date Selection**: GUI date picker defaults to today (single‑day) or tomorrow for convenience.
+* **Calendar Date Selection**: GUI date picker allows users to select the date they want to parse from a calendar popup for ease of use.
 * **Lightning Fast Parsing**: Parses 1000 real world jobs (including errors and load times) in ~6 minutes when configured to 8 threads.
 
 ## Typical Workflow
 
 1. **Launch**:
-   
+
+   * (Preferred)
+   * Return to the parent Folder (CalendarBuddy)
+   * Run `run_scraper.bat`.
+
+   * (Backup)
+   * Run `main.py`
+   * WARNING: This does not check for code updates or dependancies before running. (s**t may break)
+2. **Configure**
+
    * Select Day or week radial button.
    * Select the date you'd like to parse.
    * Configure your threads (Default is 6)
