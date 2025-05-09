@@ -225,8 +225,6 @@ def get_work_order_url(driver, log=None):
         if open_wos:
             return max(open_wos, key=lambda x: x[0])[2], max(open_wos, key=lambda x: x[0])[0]
 
-        if log:
-            log("⚠️ No valid 'In Process' or 'Open' fiber installs found. Skipping job.")
         return None, None
     except Exception as e:
         if log:
