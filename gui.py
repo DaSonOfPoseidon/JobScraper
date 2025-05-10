@@ -14,6 +14,8 @@ class CalendarBuddyGUI:
         self.root = root
         self.root.title("Calendar Buddy - Job Manager")
         self.root.geometry("720x600")
+        self.start_time = None
+        self.jobs_done  = 0
 
         self.imported_jobs = None
         self.dropped_file_path = None
@@ -77,6 +79,9 @@ class CalendarBuddyGUI:
         self.progress_bar = ttk.Progressbar(footer_frame, variable=self.progress_var, maximum=100)
         self.progress_bar.pack(fill="x", expand=True, side="left", padx=(0, 10))
 
+        self.throughput_label = ttk.Label(footer_frame, text="0.00 jobs/sec")
+        self.throughput_label.pack(side="left", padx=(0,10))
+
         self.counter_label = ttk.Label(footer_frame, text="0 of 0 completed (0%)")
         self.counter_label.pack(side="right")
 
@@ -101,10 +106,28 @@ class CalendarBuddyGUI:
             self.imported_jobs = parse_imported_jobs(file_path)
             self.log(f"✅ Parsed {len(self.imported_jobs)} imported jobs.")
 
+    def reset_throughput(self):
+        self.start_time = None
+        self.jobs_done  = 0
+        self.throughput_label.config(text="0.00 jobs/sec (– s/job)")
+
+    def update_throughput(self):
+        elapsed = time.perf_counter() - self.start_time
+        if not self.jobs_done or elapsed <= 0:
+            txt = "0.00 jobs/sec (– s/job)"
+        else:
+            num_threads = self.worker_count.get()
+            jps = self.jobs_done / elapsed
+            spj = (elapsed * num_threads) / self.jobs_done
+            txt = f"{jps:.2f} jobs/sec ({spj:.2f} s/job)"
+        self.throughput_label.config(text=txt)
+
     def start_scrape_thread(self):
+        self.reset_throughput()
         threading.Thread(target=run_scrape, args=(self,), daemon=True).start()
 
     def start_update_thread(self):
+        self.reset_throughput()
         threading.Thread(target=run_update, args=(self,), daemon=True).start()
 
 if __name__ == "__main__":

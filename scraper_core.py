@@ -1,4 +1,4 @@
-# UPDATED scraper_core.py
+# scraper_core.py
 import os
 import time
 import traceback
@@ -13,9 +13,10 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 from utils import (
-    dismiss_alert, clear_first_time_overlays,
+    dismiss_alert, clear_first_time_overlays, NoWOError, NoOpenWOError,
     get_work_order_url, get_job_type_and_address,
     get_contractor_assignments, extract_wo_date,
     handle_login, force_dismiss_any_alert, extract_cid_and_time,
@@ -28,6 +29,14 @@ def init_driver(headless=True):
     options = Options()
     options.page_load_strategy = 'eager'
     options.add_experimental_option("detach", True)
+    options.add_experimental_option("prefs", {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,
+        "profile.managed_default_content_settings.fonts": 2,
+        }    
+    )
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.set_capability("unhandledPromptBehavior", "dismiss")
 
     if headless:
         options.add_argument("--headless=new")
@@ -57,8 +66,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
         else:
             view_button = driver.find_element(By.CSS_SELECTOR, "button.fc-agendaDay-button")
         view_button.click()
-        time.sleep(1)
-        WebDriverWait(driver, 30, poll_frequency=0.25).until(EC.invisibility_of_element_located((By.ID, "spinner")))
+        WebDriverWait(driver, 30, poll_frequency=0.1).until(EC.invisibility_of_element_located((By.ID, "spinner")))
         log(f"✅ Switched to {'Week' if mode == 'week' else 'Day'} View.")
     except Exception as e:
         log(f"⚠️ Could not switch view: {e}")
@@ -102,7 +110,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
                 else:
                     driver.find_element(By.CSS_SELECTOR, "button.fc-prev-button").click()
 
-                time.sleep(1)
+                time.sleep(.25)
                 current_date = get_current_calendar_date()
                 nav_tries += 1
 
@@ -126,6 +134,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
     results = []
     counter = 0
 
+    log("Scraping Calendar...")
     for link in job_links:
         if "Residential Fiber Install" not in link.text:
             continue
@@ -135,8 +144,7 @@ def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test
             continue
 
         counter += 1
-        timestamp = datetime.now().strftime("[%H:%M:%S]")
-        log(f"{timestamp} {counter} - {cid} queued")
+        #log(f"{counter} - {cid} queued")
 
         results.append({
             "cid": cid,
@@ -159,32 +167,39 @@ def process_job_entries(driver, job, log=print):
 
     try:
         driver.get(customer_url)
-        #log(f"🌐 Loading customer page for {cid}")
-
-        clear_first_time_overlays(driver) #10 second wait?
+        clear_first_time_overlays(driver)
 
         try:
             driver.switch_to.default_content()
-            WebDriverWait(driver, 5).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
+            WebDriverWait(driver, 5, poll_frequency=0.1).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
         except Exception:
-            log(f"❌ Could not switch to MainView iframe for CID {cid}")
+            job["error"] = f"Failed to load customer page for {cid}"
             return None
 
-        workorder_url, wo_number = None, None
-        for attempt in range(3):
-            workorder_url, wo_number = get_work_order_url(driver, log)
-            if workorder_url:
-                break
-            #log(f"🔁 Retry {attempt + 1}/3: No WO yet for CID {cid}")
-            time.sleep(1)
+        def _wait_for_work_order(driver):
+            try:
+                return get_work_order_url(driver, log=None)
+            except (NoWOError, NoOpenWOError):
+                raise
+            except Exception:
+                return False
 
+        try:
+            workorder_url, wo_number = WebDriverWait(driver, 5, poll_frequency=0.1).until(
+                _wait_for_work_order
+            )
+        except (NoWOError, NoOpenWOError) as e:
+            job["error"] = str(e)
+            return None
+        except TimeoutException:
+            workorder_url, wo_number = None, None
+        
         if not workorder_url:
-            log(f"⚠️ No WO found for {cid}.")
+            job["error"] = job.get("error", " No WO found")
             return None
 
         driver.get(workorder_url)
         dismiss_alert(driver)
-        time.sleep(1)
 
         job_type, address = get_job_type_and_address(driver)
         contractor_info = get_contractor_assignments(driver)
@@ -202,6 +217,6 @@ def process_job_entries(driver, job, log=print):
         }
 
     except Exception as e:
-        log(f"❌ Failed to process job for CID {cid}: {e}")
+        log(f"Couldn't parse {cid}: {e}")
         traceback.print_exc()
         return None

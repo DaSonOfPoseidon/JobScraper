@@ -23,6 +23,7 @@ def run_scrape(app):
         app.log(f"❌ Driver init failed: {e}")
         return
 
+    tA = time.time()
     raw_jobs = scrape_jobs(
         driver=driver,
         mode=mode,
@@ -33,6 +34,8 @@ def run_scrape(app):
         log=app.log
     )
     driver.quit()
+    tB = time.time()
+    print(f"Metadata Scrape took {tB-tA:.2f}s")
 
     total_jobs = len(raw_jobs)
     results = []
@@ -48,17 +51,25 @@ def run_scrape(app):
         handle_login(local_driver)
         try:
             for job in job_batch:
+                if app.start_time is None:
+                    app.start_time = time.perf_counter()
+
                 result = process_job_entries(local_driver, job, log=app.log)
                 with lock:
                     completed[0] += 1
                     app.progress_var.set(completed[0])
                     percent = (completed[0] / total_jobs) * 100
                     app.counter_label.config(text=f"{completed[0]} of {total_jobs} completed ({percent:.0f}%)")
+                    app.jobs_done += 1
+                    app.root.after(0, app.update_throughput)
+
                     if result:
                         results.append(result)
                     else:
-                        job["error"] = "Failed to parse job details"
+                        job.setdefault("error", "Failed to parse job details")
                         incomplete.append(job)
+
+                        app.log(f"Failed to parse {job.get('cid')}")
         finally:
             local_driver.quit()
 
@@ -103,7 +114,8 @@ def run_scrape(app):
             for job in incomplete:
                 f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
 
-    app.log(f"✅ Scrape complete. {len(results)} jobs saved.")
+    app.log(f"Scrape complete. {len(results)} jobs saved.")
+    app.log(f"{len(incomplete)} unparsed jobs saved to Outputs/UnparsedJobs{output_tag}.txt")
     app.log(f"⏱️ Duration: {time.time() - t0:.2f}s")
 
 def run_update(app):
@@ -188,8 +200,10 @@ def run_update(app):
                     if result:
                         results.append(result)
                     else:
-                        job["error"] = "Failed to parse job details"
+                        job.setdefault("error", "Failed to parse job details")
                         incomplete.append(job)
+
+                        app.log(f"Failed to parse {job.get('cid')}")
         finally:
             local_driver.quit()
 

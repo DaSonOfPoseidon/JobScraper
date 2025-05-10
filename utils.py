@@ -15,7 +15,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+BASE_URL = "http://inside.sockettelecom.com/"
+COOKIE_FILE = "cookies.pkl"
 cookie_lock = threading.Lock()
+class NoWOError(Exception):
+    pass
+class NoOpenWOError(Exception):
+    pass
 
 # Setup + Creds
 def prompt_for_credentials():
@@ -57,31 +63,53 @@ def check_env_or_prompt_login(log=print):
 
 
 # Login + Session
-def save_cookies(driver, filename="cookies.pkl"):
+def save_cookies(driver, filename=COOKIE_FILE):
     with cookie_lock:
-        with open(filename, "wb") as f:
-            pickle.dump(driver.get_cookies(), f)
+        raw = driver.get_cookies()
+    safe = []
+    for c in raw:
+        entry = {k: c[k] for k in ("name","value","domain","path","expiry","secure","httpOnly") if k in c}
+        safe.append(entry)
+    with open(filename, "wb") as f:
+        pickle.dump(safe, f)
 
-def load_cookies(driver, filename="cookies.pkl"):
-    if not os.path.exists(filename): return False
+def load_cookies(driver, base_url=BASE_URL, filename=COOKIE_FILE):
+    if not os.path.exists(filename):
+        return False
+
     try:
         with cookie_lock:
-            with open(filename, "rb") as f:
-                cookies = pickle.load(f)
-
-        driver.get("http://inside.sockettelecom.com/")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-        driver.refresh()
-        clear_first_time_overlays(driver)
-        return True
+            saved = pickle.load(open(filename, "rb"))
     except Exception:
-        if os.path.exists(filename): os.remove(filename)
+        # Bad file → delete and force a fresh login next time
+        os.remove(filename)
         return False
+
+    # Navigate to host so cookies can be applied
+    driver.get(base_url)
+    host = base_url.split("://",1)[1].split("/",1)[0]
+
+    injected = False
+    for c in saved:
+        c["domain"] = host
+        try:
+            driver.add_cookie(c)
+            injected = True
+        except Exception as e:
+            # skip malformed cookies
+            print(f"⚠️ Skipping cookie {c.get('name')}: {e}")
+
+    if not injected:
+        # No valid cookies → delete file to avoid repeated failures
+        os.remove(filename)
+        return False
+
+    driver.refresh()
+    return True
 
 
 def handle_login(driver, log=print):
-    driver.get("http://inside.sockettelecom.com/")
+    driver.get(BASE_URL)
 
     if load_cookies(driver):
         if not login_failed(driver):
@@ -89,20 +117,24 @@ def handle_login(driver, log=print):
             clear_first_time_overlays(driver)
             return
         else:
-            print("⚠️ Cookie session invalid — retrying with credentials...")
+            log("⚠️ Cookie session invalid—deleting and retrying with credentials.")
+            try: os.remove(COOKIE_FILE)
+            except OSError: pass
 
-    # === Try saved creds and prompt until success ===
+    # === Fallback to credential login ===
     while "login.php" in driver.current_url or "Username" in driver.page_source:
         username, password = check_env_or_prompt_login(log)
-        if not username or not password:
+        if not (username and password):
             log("❌ Login cancelled.")
             return
 
         perform_login(driver, username, password)
-        WebDriverWait(driver, 10).until(lambda d: "menu.php" in d.current_url or "calendar" in d.current_url)
+        WebDriverWait(driver, 10).until(
+            lambda d: "menu.php" in d.current_url or "calendar" in d.page_source
+        )
 
         if not login_failed(driver):
-            save_cookies(driver)
+            save_cookies(driver)   # <-- write fresh cookies
             log("✅ Logged in with username/password.")
             return
         else:
@@ -203,36 +235,60 @@ def get_contractor_assignments(driver):
 def get_work_order_url(driver, log=None):
     try:
         dismiss_alert(driver)
-        WebDriverWait(driver, 5, poll_frequency=0.05).until(lambda d: d.find_element(By.ID, "workShow").is_displayed())
-        rows = driver.find_elements(By.XPATH, "//div[@id='workShow']//table//tr[position()>1]")
+        WebDriverWait(driver, 5, poll_frequency=0.05).until(
+            lambda d: d.find_element(By.ID, "workShow").is_displayed()
+        )
+
+        # gather all install-fiber WOs
+        rows = driver.find_elements(
+            By.XPATH, "//div[@id='workShow']//table//tr[position()>1]"
+        )
         install_wos = []
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) < 5:
                 continue
             wo_num = cols[0].text.strip()
-            desc = cols[1].text.strip().lower()
+            desc   = cols[1].text.strip().lower()
             status = cols[3].text.strip().lower()
-            url = cols[4].find_element(By.TAG_NAME, "a").get_attribute("href")
+            url    = cols[4].find_element(By.TAG_NAME, "a").get_attribute("href")
             if "install" in desc and "fiber" in desc:
                 install_wos.append((int(wo_num), status, url))
 
-        in_process_wos = [wo for wo in install_wos if "in process" in wo[1]]
-        if in_process_wos:
-            return max(in_process_wos, key=lambda x: x[0])[2], max(in_process_wos, key=lambda x: x[0])[0]
+        # 1) no install WOs at all
+        if not install_wos:
+            if log:
+                log("⚠️ No install WOs found on page")
+            raise NoWOError("No install work orders found")
 
+        # 2) any “in process” WOs?
+        in_process = [wo for wo in install_wos if "in process" in wo[1]]
+        if in_process:
+            best = max(in_process, key=lambda x: x[0])
+            return best[2], best[0]
+
+        # 3) any “open” or “scheduled” WOs?
         open_wos = [wo for wo in install_wos if "open" in wo[1] or "scheduled" in wo[1]]
         if open_wos:
-            return max(open_wos, key=lambda x: x[0])[2], max(open_wos, key=lambda x: x[0])[0]
+            best = max(open_wos, key=lambda x: x[0])
+            return best[2], best[0]
 
-        return None, None
+        # 4) install WOs exist but none are open/scheduled
+        if log:
+            log("⚠️ Found install WOs, but none are open or scheduled")
+        raise NoOpenWOError("Install work orders exist but none are open")
+
+    except (NoWOError, NoOpenWOError):
+        # propagate our custom errors so caller can set job["error"] appropriately
+        raise
+
     except Exception as e:
+        # all other errors get your original fallback
         if log:
             log(f"❌ Error finding work order URL: {e}")
         else:
             print(f"❌ Error finding work order URL: {e}")
         return None, None
-
 
 def get_job_type_and_address(driver):
     wait = WebDriverWait(driver, 10)
