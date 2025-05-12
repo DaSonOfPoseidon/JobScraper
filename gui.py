@@ -12,7 +12,7 @@ from scrape_runner import run_scrape, run_update
 class CalendarBuddyGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Calendar Buddy - Job Manager")
+        self.root.title("Calendar Buddy - Job Scraper")
         self.root.geometry("720x600")
         self.start_time = None
         self.jobs_done  = 0

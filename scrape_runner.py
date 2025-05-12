@@ -114,9 +114,11 @@ def run_scrape(app):
             for job in incomplete:
                 f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
 
+    elapsed = time.time() - t0
+    minutes, seconds = divmod(elapsed, 60)
     app.log(f"Scrape complete. {len(results)} jobs saved.")
     app.log(f"{len(incomplete)} unparsed jobs saved to Outputs/UnparsedJobs{output_tag}.txt")
-    app.log(f"⏱️ Duration: {time.time() - t0:.2f}s")
+    app.log(f"⏱️ Duration: {int(minutes)}:{int(seconds):02d} ({time.time() - t0:.2f}s)")
 
 def run_update(app):
     app.log("🔄 Starting Get Updates Mode...")
