@@ -59,6 +59,9 @@ def init_driver(headless: bool = True) -> webdriver.Chrome:
         opts.add_argument("--headless=new")
         opts.add_argument("--disable-gpu")
         opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-usb-keyboard-detect")
+        opts.add_argument("--disable-hid-detection")
+        opts.add_argument("--log-level=3")
 
     # performance tweaks:
     opts.page_load_strategy = "eager"

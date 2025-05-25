@@ -8,6 +8,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper_core import scrape_jobs, init_driver, process_job_entries
 from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login
+from emailer import send_job_results
+
+def handle_exports(app, results, txt_filename, excel_filename):
+    files = []
+
+    # 1) TXT export
+    export_txt(results, filename=txt_filename)
+    files.append(txt_filename)
+
+    # 2) Excel export, if checked
+    if app.export_excel.get():
+        export_excel(results, filename=excel_filename)
+        files.append(excel_filename)
+
+    # 3) Email, if checked
+    if app.send_email.get():
+        date_range = app.base_date.get()
+        send_job_results(files, date_range)
 
 def run_scrape(app):
     app.log("🚀 Starting full scrape...")
@@ -15,6 +33,7 @@ def run_scrape(app):
 
     selected_day = app.base_date.get()
     mode = app.scrape_mode_choice.get()
+    send_email = app.send_email.get()
 
     try:
         driver = init_driver(headless=True)
@@ -103,9 +122,7 @@ def run_scrape(app):
         start_date = sunday
         end_date = saturday
 
-    export_txt(results, filename=txt_filename)
-    if app.export_excel.get():
-        export_excel(results, filename=excel_filename)
+    handle_exports(app, results, txt_filename, excel_filename)
 
     output_tag = start_date.strftime("%m%d") if start_date == end_date else f"{start_date.strftime('%m%d')}-{end_date.strftime('%m%d')}"
 
@@ -229,9 +246,7 @@ def run_update(app):
     excel_filename = os.path.join(output_dir, f"Jobs{filename_tag}_updates.xlsx")
     diff_path = os.path.join(output_dir, f"Changes{filename_tag}.txt")
 
-    export_txt(results, filename=txt_filename)
-    if app.export_excel.get():
-        export_excel(results, filename=excel_filename)
+    handle_exports(app, results, txt_filename, excel_filename)
 
     if incomplete:
         unparsed_file = os.path.join(output_dir, f"UnparsedJobs{filename_tag}.txt")
