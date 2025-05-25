@@ -4,6 +4,8 @@ import time
 import traceback
 from datetime import datetime
 from datetime import timedelta
+import platform
+import shutil
 from dateutil import parser as dateparser
 from dotenv import load_dotenv, set_key
 from tkinter import Tk, messagebox, simpledialog
@@ -14,6 +16,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from webdriver_manager.chrome import ChromeDriverManager
 
 from utils import (
     dismiss_alert, clear_first_time_overlays, NoWOError, NoOpenWOError,
@@ -25,35 +28,64 @@ from utils import (
 CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
 CUSTOMER_URL_TEMPLATE = "http://inside.sockettelecom.com/menu.php?coid=1&tabid=7&parentid=9&customerid={}"
 
-def init_driver(headless=True):
-    options = Options()
-    options.page_load_strategy = 'eager'
-    options.add_experimental_option("detach", True)
-    options.add_experimental_option("prefs", {
+def init_driver(headless: bool = True) -> webdriver.Chrome:
+    # 1) Locate the browser binary
+    chrome_bin = (
+        os.environ.get("CHROME_BIN")
+        or shutil.which("google-chrome")
+        or shutil.which("chrome")
+        or shutil.which("chromium-browser")
+        or shutil.which("chromium")
+    )
+    if not chrome_bin and platform.system() == "Windows":
+        # Probe standard Windows install paths
+        for p in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ):
+            if os.path.exists(p):
+                chrome_bin = p
+                break
+
+    if not chrome_bin or not os.path.exists(chrome_bin):
+        raise RuntimeError(
+            "Chrome/Chromium binary not found—install it or set CHROME_BIN"
+        )
+
+    # 2) Build ChromeOptions
+    opts = webdriver.ChromeOptions()
+    opts.binary_location = chrome_bin
+    if headless:
+        opts.add_argument("--headless=new")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--no-sandbox")
+
+    # performance tweaks:
+    opts.page_load_strategy = "eager"
+    opts.add_experimental_option("detach", False)       # or True only when debugging
+    opts.add_experimental_option("prefs", {
         "profile.managed_default_content_settings.images": 2,
         "profile.managed_default_content_settings.stylesheets": 2,
         "profile.managed_default_content_settings.fonts": 2,
-        }    
-    )
-    options.add_argument("--blink-settings=imagesEnabled=false")
-    options.set_capability("unhandledPromptBehavior", "dismiss")
+    })
+    opts.add_argument("--blink-settings=imagesEnabled=false")
+    opts.set_capability("unhandledPromptBehavior", "dismiss")
 
-    if headless:
-        options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-    try:
-        driver_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../chromedriver.exe"))
+    # 3) Pick driver based on platform
+    system = platform.system()
+    arch = platform.machine().lower()
+    if system == "Linux" and ("arm" in arch or "aarch64" in arch):
+        # Raspberry Pi / ARM Linux → use distro’s chromedriver
+        driver_path = "/usr/bin/chromedriver"
+        if not os.path.exists(driver_path):
+            raise RuntimeError("ARM chromedriver not found; please `apt install chromium-driver`")
         service = Service(driver_path)
-        service.creationflags = 0x08000000 
-        return webdriver.Chrome(service=service, options=options)
-    except Exception as e:
-        print("❌ ChromeDriver failed to initialize.")
-        print("🔧 Possible issues: wrong ChromeDriver version, not executable, path mismatch.")
-        raise e
+    else:
+        # x86 Linux or Windows → download via webdriver-manager
+        service = Service(ChromeDriverManager().install())
+
+    # 4) Launch
+    return webdriver.Chrome(service=service, options=opts)
     
 def scrape_jobs(driver, mode="week", imported_jobs=None, selected_day=None, test_mode=False, test_limit=10, log=print):
     handle_login(driver, log)
