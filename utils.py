@@ -250,9 +250,10 @@ def get_work_order_url(driver, log=None):
                 continue
             wo_num = cols[0].text.strip()
             desc   = cols[1].text.strip().lower()
+            job_type = cols[2].text.strip().lower()
             status = cols[3].text.strip().lower()
             url    = cols[4].find_element(By.TAG_NAME, "a").get_attribute("href")
-            if "install" in desc and "fiber" in desc:
+            if "install" in job_type and "fiber" in job_type:
                 install_wos.append((int(wo_num), status, url))
 
         # 1) no install WOs at all
@@ -386,7 +387,7 @@ def export_txt(jobs, filename="../Outputs/Jobs.txt"):
             f.write(f"{company}\n\n")
             for date, entries in sorted(days.items()):
                 f.write(f"{date}\n")
-                for job in sorted(entries, key=lambda j: get_sort_key(j['time'])):
+                for job in sorted(entries, key=lambda j: (get_sort_key(j['time']), j['name'].lower())):
                     f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
                 f.write("\n")
             f.write("\n")
@@ -401,7 +402,7 @@ def export_excel(jobs, filename="../Outputs/Jobs.txt"):
         rows.append([company])
         for date, entries in sorted(days.items()):
             rows.append([date])
-            for job in sorted(entries, key=lambda j: get_sort_key(j['time'])):
+            for job in sorted(entries, key=lambda j: (get_sort_key(j['time']), j['name'].lower())):
                 rows.append([
                     job['time'],
                     job['name'],

@@ -2,6 +2,7 @@ import os
 import re
 import time
 import threading
+import socket
 from datetime import datetime, timedelta
 from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,7 +11,7 @@ from scraper_core import scrape_jobs, init_driver, process_job_entries
 from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login
 from emailer import send_job_results
 
-def handle_exports(app, results, txt_filename, excel_filename):
+def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=None, stats=None):
     files = []
 
     # 1) TXT export
@@ -21,11 +22,15 @@ def handle_exports(app, results, txt_filename, excel_filename):
     if app.export_excel.get():
         export_excel(results, filename=excel_filename)
         files.append(excel_filename)
+    
+    # 3) Add any extra attachments
+    if unparsed_jobs:
+        files.extend(unparsed_jobs)
 
     # 3) Email, if checked
     if app.send_email.get():
         date_range = app.base_date.get()
-        send_job_results(files, date_range)
+        send_job_results(files, date_range, stats)
 
 def run_scrape(app):
     app.log("🚀 Starting full scrape...")
@@ -122,16 +127,44 @@ def run_scrape(app):
         start_date = sunday
         end_date = saturday
 
-    handle_exports(app, results, txt_filename, excel_filename)
-
     output_tag = start_date.strftime("%m%d") if start_date == end_date else f"{start_date.strftime('%m%d')}-{end_date.strftime('%m%d')}"
 
+    unparsed_file = None
     if incomplete:
+        unparsed_file = os.path.join(output_dir, f"UnparsedJobs{output_tag}.txt")
         with open(os.path.join(output_dir, f"UnparsedJobs{output_tag}.txt"), "w") as f:
             for job in incomplete:
                 f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
 
     elapsed = time.time() - t0
+    minutes, seconds = divmod(elapsed, 60)
+    num_threads = app.worker_count.get()
+    mode = app.scrape_mode_choice.get()
+    selected_day = app.base_date.get()
+    total_jobs = len(results)
+    failed_jobs = len(incomplete)
+    avg_time = elapsed / total_jobs if total_jobs else 0
+    start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0))
+    end_time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    hostname = socket.gethostname()
+
+    stats = (
+        f"Stats for this run:\n"
+        f"---------------------\n"
+        f"Scrape Mode:     {mode} ({selected_day})\n"
+        f"Threads Used:    {num_threads}\n"
+        f"Total Jobs:      {total_jobs}\n"
+        f"Failed/Unparsed: {failed_jobs}\n"
+        f"Total Time:      {int(minutes)}m {int(seconds)}s\n"
+        f"Avg Time/Job:    {avg_time:.2f} sec/job\n"
+        f"Start Time:      {start_time_str}\n"
+        f"End Time:        {end_time_str}\n"
+        f"Host:            {hostname}\n"
+    )
+
+    handle_exports(app, results, txt_filename, excel_filename, [unparsed_file] if unparsed_file else None, stats)
+
     minutes, seconds = divmod(elapsed, 60)
     app.log(f"Scrape complete. {len(results)} jobs saved.")
     app.log(f"{len(incomplete)} unparsed jobs saved to Outputs/UnparsedJobs{output_tag}.txt")
@@ -246,8 +279,6 @@ def run_update(app):
     excel_filename = os.path.join(output_dir, f"Jobs{filename_tag}_updates.xlsx")
     diff_path = os.path.join(output_dir, f"Changes{filename_tag}.txt")
 
-    handle_exports(app, results, txt_filename, excel_filename)
-
     if incomplete:
         unparsed_file = os.path.join(output_dir, f"UnparsedJobs{filename_tag}.txt")
         with open(unparsed_file, "w") as f:
@@ -257,3 +288,5 @@ def run_update(app):
     app.log(f"📊 Comparison written to: {diff_path}")
     app.log(f"✅ Updates processed. {len(results)} changes scraped.")
     app.log(f"⏱️ Total time: {time.time() - t0:.2f} seconds")
+
+    handle_exports(app, results, txt_filename, excel_filename, [unparsed_file] if unparsed_file else None, stats)
