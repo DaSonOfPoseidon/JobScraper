@@ -8,7 +8,7 @@ from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper_core import scrape_jobs, init_driver, process_job_entries
-from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login
+from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login, OUTPUT_DIR
 from emailer import send_job_results
 
 def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=None, stats=None):
@@ -108,7 +108,7 @@ def run_scrape(app):
         for _ in as_completed(futures):
             pass
 
-    output_dir = "Outputs"
+    output_dir = OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
 
     if mode == "day":

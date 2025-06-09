@@ -15,8 +15,15 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+HERE = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
+
 BASE_URL = "http://inside.sockettelecom.com/"
-COOKIE_FILE = "cookies.pkl"
+COOKIE_FILE = os.path.join(PROJECT_ROOT, "cookies.pkl")
+
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Outputs")
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+
 cookie_lock = threading.Lock()
 class NoWOError(Exception):
     pass
@@ -35,7 +42,7 @@ def prompt_for_credentials():
     return USERNAME, PASSWORD
 
 def save_env_credentials(USERNAME, PASSWORD):
-    dotenv_path = ".env"
+    dotenv_path = ENV_PATH
     if not os.path.exists(dotenv_path):
         with open(dotenv_path, "w") as f:
             f.write("")
@@ -362,9 +369,10 @@ def generate_diff_report_and_return(imported_jobs, scraped_jobs, output_tag=""):
     moved = [(old_cids[cid], new_cids[cid]) for cid in old_cids if cid in new_cids and job_key(old_cids[cid]) != job_key(new_cids[cid])]
 
     # Write report
-    os.makedirs("Outputs", exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     filename_tag = datetime.now().strftime("%m%d%H%M")
-    with open(f"Outputs/Changes{filename_tag}.txt", "w") as f:
+    report_path = os.path.join(OUTPUT_DIR, f"Changes{filename_tag}.txt")
+    with open(report_path, "w", encoding="utf-8") as f:
         f.write("=== Added ===\n")
         for job in added:
             f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - {job.get('type', '?')} - {job.get('address', '?')} - WO {job.get('wo', '?')}\n")
@@ -377,12 +385,16 @@ def generate_diff_report_and_return(imported_jobs, scraped_jobs, output_tag=""):
 
     return added, removed, moved
 
-def export_txt(jobs, filename="../Outputs/Jobs.txt"):
+def export_txt(jobs, filename=None):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
 
-    with open(filename, "w") as f:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out_name = os.path.basename(filename) if filename else "Jobs.txt"
+    out_path = os.path.join(OUTPUT_DIR, out_name)
+
+    with open(out_path, "w", encoding="utf-8") as f:
         for company, days in jobs_by_company.items():
             f.write(f"{company}\n\n")
             for date, entries in sorted(days.items()):
@@ -392,10 +404,14 @@ def export_txt(jobs, filename="../Outputs/Jobs.txt"):
                 f.write("\n")
             f.write("\n")
 
-def export_excel(jobs, filename="../Outputs/Jobs.txt"):
+def export_excel(jobs, filename=None):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
     for job in jobs:
         jobs_by_company[job["company"]][job["date"]].append(job)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out_name = os.path.basename(filename) if filename else "Jobs.txt"
+    out_path = os.path.join(OUTPUT_DIR, out_name)
 
     rows = []
     for company, days in jobs_by_company.items():
@@ -416,16 +432,17 @@ def export_excel(jobs, filename="../Outputs/Jobs.txt"):
 
     # Write to Excel
     df = pd.DataFrame(rows)
-    df.to_excel(filename, index=False, header=False)
+    
+    df.to_excel(out_path, index=False, header=False)
 
     # Autofit column widths
-    wb = load_workbook(filename)
+    wb = load_workbook(out_path)
     ws = wb.active
     for col in ws.columns:
         max_length = max(len(str(cell.value or "")) for cell in col)
         col_letter = get_column_letter(col[0].column)
         ws.column_dimensions[col_letter].width = max_length + 2
-    wb.save(filename)
+    wb.save(out_path)
 
 def parse_imported_jobs(file_path):
     jobs = []
