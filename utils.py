@@ -300,23 +300,78 @@ def get_work_order_url(driver, log=None):
 
 def get_job_type_and_address(driver):
     wait = WebDriverWait(driver, 10)
-    job_type = "Unknown"
+
+    # 1) Grab the address for city-inspection
     address = "Unknown"
-    is_connectorized = False
-    has_phone = False
     try:
-        desc_text = driver.find_element(By.XPATH, "//td[contains(text(), 'Description:')]/following-sibling::td").text.strip().lower()
+        address = driver.find_element(
+            By.XPATH,
+            "//a[contains(@href, 'viewServiceMap')]"
+        ).text.strip()
+    except:
+        pass
+
+    # 2) Read the packageName <b> text for actual package info
+    package_info = ""
+    try:
+        pkg_elem = driver.find_element(
+            By.CSS_SELECTOR,
+            ".packageName.text-indent b"
+        )
+        package_info = pkg_elem.text.strip()
+    except:
+        pass
+    pkg_lower = package_info.lower()
+
+    # 3) Grab the description (for connectorized check)
+    desc_text = ""
+    try:
+        desc_text = driver.find_element(
+            By.XPATH,
+            "//td[contains(text(), 'Description:')]/following-sibling::td"
+        ).text.strip().lower()
+    except:
+        pass
+
+    # 4) OFFICIAL 5 Gig check 
+    if "5 gig" in pkg_lower and "2.5" not in pkg_lower:
         is_connectorized = "connectorized" in desc_text
-    except: pass
-    try:
-        service_div = driver.find_element(By.CLASS_NAME, "servicesDiv").text.strip().lower()
-        has_phone = "phone" in service_div
-    except: pass
-    job_type = ("Connectorized Bundle" if has_phone else "Connectorized") if is_connectorized else ("Fiber Bundle" if has_phone else "Naked Fiber")
-    try:
-        address = driver.find_element(By.XPATH, "//a[contains(@href, 'viewServiceMap')]").text.strip()
-    except: pass
+        has_phone        = "bundle" in pkg_lower or "phone" in pkg_lower
+
+        if is_connectorized:
+            job_type = "Connectorized 5 Gig Bundle" if has_phone else "Connectorized 5 Gig"
+        else:
+            job_type = "5 Gig Fiber Bundle"       if has_phone else "5 Gig Naked Fiber"
+
+        return job_type, address
+
+    # 5) Conversion Fallback: no package + Jefferson City → 5 Gig Conversion (until IT fixes the WO)
+    if not package_info and "jefferson city" in address.lower():
+        return "5 Gig Conversion", address
+
+    # 6) 2.5G branch
+    if "2.5" in pkg_lower:
+        is_connectorized = "connectorized" in desc_text
+        has_phone        = "bundle" in pkg_lower or "phone" in pkg_lower
+
+        if is_connectorized:
+            job_type = "Connectorized 2.5G Bundle" if has_phone else "Connectorized 2.5G"
+        else:
+            job_type = "2.5G Fiber Bundle"       if has_phone else "2.5G Naked Fiber"
+
+        return job_type, address
+
+    # 7) OTHERWISE: your existing Connectorized / Bundle / Naked logic
+    is_connectorized = "connectorized" in desc_text
+    has_phone        = "bundle" in pkg_lower or "phone" in pkg_lower
+
+    if is_connectorized:
+        job_type = "Connectorized Bundle" if has_phone else "Connectorized"
+    else:
+        job_type = "Fiber Bundle"       if has_phone else "Naked Fiber"
+
     return job_type, address
+
 
 def extract_wo_date(driver):
     try:

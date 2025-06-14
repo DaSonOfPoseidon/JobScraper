@@ -8,8 +8,9 @@ from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper_core import scrape_jobs, init_driver, process_job_entries
-from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login, OUTPUT_DIR
+from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login, OUTPUT_DIR, PROJECT_ROOT
 from emailer import send_job_results
+from spreader import run_process as run_spreader
 
 def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=None, stats=None):
     files = []
@@ -165,9 +166,21 @@ def run_scrape(app):
 
     handle_exports(app, results, txt_filename, excel_filename, [unparsed_file] if unparsed_file else None, stats)
 
+
+
     minutes, seconds = divmod(elapsed, 60)
     app.log(f"Scrape complete. {len(results)} jobs saved.")
     app.log(f"{len(incomplete)} unparsed jobs saved to Outputs/UnparsedJobs{output_tag}.txt")
+    spread_file = None
+    try:
+        spread_file = run_spreader(txt_filename)
+        if os.path.exists(spread_file):
+            rel_path = os.path.relpath(spread_file, PROJECT_ROOT)
+            app.log(f"(Experimental) Recommended spread saved to {rel_path}")
+        else:
+            app.log(f"(Experimental) Spreader failed: {spread_file}")
+    except Exception as e:
+        app.log(f"(Experimental) Spreader crashed: {e}")
     app.log(f"⏱️ Duration: {int(minutes)}:{int(seconds):02d} ({time.time() - t0:.2f}s)")
 
 def run_update(app):
