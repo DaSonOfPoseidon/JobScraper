@@ -7,7 +7,7 @@ from tkinterdnd2 import DND_FILES
 from tkcalendar import DateEntry
 from datetime import datetime
 from utils import parse_imported_jobs
-from scrape_runner import run_scrape, run_update
+from scrape_runner import run_scrape
 
 class CalendarBuddyGUI:
     def __init__(self, root):
@@ -25,6 +25,7 @@ class CalendarBuddyGUI:
         self.worker_count = tk.IntVar(value=6)
         self.export_excel = tk.BooleanVar(value=False)
         self.send_email = tk.BooleanVar(value=False)
+        self.run_spreader = tk.BooleanVar(value=True)
         self.base_date = tk.StringVar()
 
         # === File Input Section ===
@@ -51,8 +52,8 @@ class CalendarBuddyGUI:
         ttk.Spinbox(settings_frame, from_=1, to=32, textvariable=self.worker_count, width=5).grid(row=1, column=1, sticky="w")
 
         ttk.Checkbutton(settings_frame, text="Export Excel", variable=self.export_excel).grid(row=1, column=2, sticky="e", padx=10)
-
         ttk.Checkbutton(settings_frame, text="Send Email", variable=self.send_email).grid(row=1, column=3, sticky="e", padx=10)
+        ttk.Checkbutton(settings_frame, text="Run Spreader (experimental)", variable=self.run_spreader).grid(row=1, column=4, sticky="w", padx=10)
 
         ttk.Label(settings_frame, text="Calendar Date:").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
         DateEntry(settings_frame, textvariable=self.base_date, width=12).grid(row=2, column=1, sticky="w", pady=(5, 0))
@@ -65,7 +66,6 @@ class CalendarBuddyGUI:
         button_frame.pack(pady=10)
 
         ttk.Button(button_frame, text="Run Job Scrape", command=self.start_scrape_thread).pack(side="left", padx=20)
-        ttk.Button(button_frame, text="Get Updates", command=self.start_update_thread).pack(side="left", padx=20)
 
         # === Log Console ===
         log_frame = ttk.LabelFrame(root, text="Output Log")
@@ -128,10 +128,6 @@ class CalendarBuddyGUI:
     def start_scrape_thread(self):
         self.reset_throughput()
         threading.Thread(target=run_scrape, args=(self,), daemon=True).start()
-
-    def start_update_thread(self):
-        self.reset_throughput()
-        threading.Thread(target=run_update, args=(self,), daemon=True).start()
 
 if __name__ == "__main__":
     root = tk.Tk()

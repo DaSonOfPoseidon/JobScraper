@@ -8,7 +8,7 @@ from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper_core import scrape_jobs, init_driver, process_job_entries
-from utils import export_txt, export_excel, generate_diff_report_and_return,  handle_login, OUTPUT_DIR, PROJECT_ROOT
+from utils import export_txt, export_excel, generate_changes_file,  handle_login, OUTPUT_DIR, PROJECT_ROOT
 from emailer import send_job_results
 from spreader import run_process as run_spreader
 
@@ -34,6 +34,7 @@ def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=Non
         send_job_results(files, date_range, stats)
 
 def run_scrape(app):
+    is_update = bool(app.imported_jobs)
     app.log("🚀 Starting full scrape...")
     t0 = time.time()
 
@@ -166,140 +167,40 @@ def run_scrape(app):
 
     handle_exports(app, results, txt_filename, excel_filename, [unparsed_file] if unparsed_file else None, stats)
 
-
-
     minutes, seconds = divmod(elapsed, 60)
     app.log(f"Scrape complete. {len(results)} jobs saved.")
-    app.log(f"{len(incomplete)} unparsed jobs saved to Outputs/UnparsedJobs{output_tag}.txt")
-    spread_file = None
-    try:
-        spread_file = run_spreader(txt_filename)
-        if os.path.exists(spread_file):
-            rel_path = os.path.relpath(spread_file, PROJECT_ROOT)
-            app.log(f"(Experimental) Recommended spread saved to {rel_path}")
-        else:
-            app.log(f"(Experimental) Spreader failed: {spread_file}")
-    except Exception as e:
-        app.log(f"(Experimental) Spreader crashed: {e}")
-    app.log(f"⏱️ Duration: {int(minutes)}:{int(seconds):02d} ({time.time() - t0:.2f}s)")
+    if unparsed_file:
+        rel_unparsed = os.path.relpath(unparsed_file, PROJECT_ROOT)
+        app.log(f"{len(incomplete)} unparsed jobs saved to {rel_unparsed}")
 
-def run_update(app):
-    app.log("🔄 Starting Get Updates Mode...")
-    t0 = time.time()
-
-    if not app.imported_jobs:
-        app.log("⚠️ No baseline jobs to compare. Load a .txt or .xlsx file first.")
-        return
-
-    def infer_date_from_filename(path):
-        filename = os.path.basename(path)
-        match_day = re.search(r"Jobs(\d{4})\.txt", filename)
-        match_range = re.search(r"Jobs(\d{4})-(\d{4})\.txt", filename)
-        if match_day:
-            parsed = datetime.strptime(match_day.group(1), "%m%d").replace(year=datetime.now().year)
-            return parsed.date(), "day", match_day.group(1)
-        elif match_range:
-            start = datetime.strptime(match_range.group(1), "%m%d").replace(year=datetime.now().year)
-            end = datetime.strptime(match_range.group(2), "%m%d").replace(year=datetime.now().year)
-            return start.date(), "week", f"{match_range.group(1)}-{match_range.group(2)}"
-        return None, None, None
-
-    inferred_date, scrape_mode, filename_tag = infer_date_from_filename(app.dropped_file_path)
-    if not inferred_date:
-        app.log("⚠️ Could not infer date from filename. Use JobsMMDD or JobsMMDD-MMDD.")
-        return
-
-    selected_day = inferred_date.strftime("%m/%d/%y")
-
-    try:
-        driver = init_driver(headless=True)
-        app.log("✅ Driver initialized.")
-    except Exception as e:
-        app.log(f"❌ Driver initialization failed: {e}")
-        return
-
-    scraped_metadata = scrape_jobs(
-        driver=driver,
-        mode=scrape_mode,
-        imported_jobs=None,
-        selected_day=selected_day,
-        test_mode=app.test_mode.get(),
-        test_limit=app.test_limit.get(),
-        log=app.log
-    )
-    driver.quit()
-
-    if not scraped_metadata:
-        app.log("⚠️ No metadata jobs found.")
-        return
-
-    added, removed, moved = generate_diff_report_and_return(app.imported_jobs, scraped_metadata, filename_tag)
-    jobs_to_scrape = added + [new for _, new in moved]
-
-    app.log(f"🔍 Diff results — {len(added)} added, {len(removed)} removed, {len(moved)} moved.")
-
-    if not jobs_to_scrape:
-        app.log("✅ No new or moved jobs to scrape. Changes file has been written.")
-        return
-
-    results = []
-    incomplete = []
-    total_jobs = len(jobs_to_scrape)
-    completed = [0]
-    app.progress_var.set(0)
-    app.progress_bar["maximum"] = total_jobs
-    app.counter_label.config(text=f"0 of {total_jobs} completed (0%)")
-    lock = threading.Lock()
-
-    def thread_task(job_batch):
-        local_driver = init_driver(headless=True)
-        handle_login(local_driver, log=app.log)
-        try:
-            for job in job_batch:
-                result = process_job_entries(local_driver, job, log=app.log)
-                with lock:
-                    completed[0] += 1
-                    app.progress_var.set(completed[0])
-                    percent = (completed[0] / total_jobs) * 100
-                    app.counter_label.config(text=f"{completed[0]} of {total_jobs} completed ({percent:.0f}%)")
-                    if result:
-                        results.append(result)
-                    else:
-                        job.setdefault("error", "Failed to parse job details")
-                        incomplete.append(job)
-
-                        app.log(f"Failed to parse {job.get('cid')}")
-        finally:
-            local_driver.quit()
-
-    num_threads = app.worker_count.get()
-    batch_size = ceil(len(jobs_to_scrape) / num_threads)
-    batches = [jobs_to_scrape[i:i + batch_size] for i in range(0, len(jobs_to_scrape), batch_size)]
-
-    app.log(f"🛠 Scraping {total_jobs} changed jobs with {num_threads} threads...")
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = [executor.submit(thread_task, batch) for batch in batches]
-        for future in as_completed(futures):
+    if is_update:
+        def same_day(job):
             try:
-                future.result()  # Catch and log thread exceptions
-            except Exception as e:
-                app.log(f"❌ Thread failed: {e}")
+                # job["date"] is like "6-16-25"
+                dt = datetime.strptime(job["date"], "%m-%d-%y")
+                return dt.strftime("%m%d") == output_tag
+            except Exception:
+                return False
 
-    output_dir = "Outputs"
-    os.makedirs(output_dir, exist_ok=True)
+        filtered_old = [j for j in app.imported_jobs if same_day(j)]
 
-    txt_filename = os.path.join(output_dir, f"Jobs{filename_tag}_updates.txt")
-    excel_filename = os.path.join(output_dir, f"Jobs{filename_tag}_updates.xlsx")
-    diff_path = os.path.join(output_dir, f"Changes{filename_tag}.txt")
+        changes_filename = f"{output_tag}Changes.txt"
+        changes_path = generate_changes_file(
+            filtered_old,
+            results,
+            changes_filename
+        )
+        app.log(f"✅ Change summary written to {os.path.relpath(changes_path)}")
 
-    if incomplete:
-        unparsed_file = os.path.join(output_dir, f"UnparsedJobs{filename_tag}.txt")
-        with open(unparsed_file, "w") as f:
-            for job in incomplete:
-                f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - REASON: {job.get('error', 'Unknown')}\n")
-
-    app.log(f"📊 Comparison written to: {diff_path}")
-    app.log(f"✅ Updates processed. {len(results)} changes scraped.")
-    app.log(f"⏱️ Total time: {time.time() - t0:.2f} seconds")
-
-    handle_exports(app, results, txt_filename, excel_filename, [unparsed_file] if unparsed_file else None, stats)
+    if getattr(app, "run_spreader", None) and app.run_spreader.get():
+        try:
+            spread_file = run_spreader(txt_filename)
+            if os.path.exists(spread_file):
+                rel_path = os.path.relpath(spread_file, PROJECT_ROOT)
+                app.log(f"(Experimental) Recommended spread saved to {rel_path}")
+            else:
+                app.log(f"(Experimental) Spreader failed: {spread_file}")
+        except Exception as e:
+            app.log(f"(Experimental) Spreader crashed: {e}")
+    
+    app.log(f"⏱️ Duration: {int(minutes)}:{int(seconds):02d} ({time.time() - t0:.2f}s)")

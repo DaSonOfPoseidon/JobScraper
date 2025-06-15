@@ -372,7 +372,6 @@ def get_job_type_and_address(driver):
 
     return job_type, address
 
-
 def extract_wo_date(driver):
     try:
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "scheduledEventList")))
@@ -408,37 +407,36 @@ def get_sort_key(time_str):
 
 
 # I/O
-def generate_diff_report_and_return(imported_jobs, scraped_jobs, output_tag=""):
+def generate_changes_file(old_list, new_list, changes_filename):
+    def stringify(j):
+        return f"{j['time']} - {j['name']} - {j['cid']} - {j['type']} - {j['address']} - WO {j['wo']}"
 
-    def job_key(job):
-        return f"{job.get('cid')}|{job.get('time')}"
+    # build sets of lines per company
+    old_by_co = defaultdict(set)
+    new_by_co = defaultdict(set)
+    for j in old_list:
+        old_by_co[j['company']].add(stringify(j))
+    for j in new_list:
+        new_by_co[j['company']].add(stringify(j))
 
-    old_jobs = {job_key(job): job for job in imported_jobs}
-    new_jobs = {job_key(job): job for job in scraped_jobs}
+    # all companies seen
+    companies = sorted(set(old_by_co) | set(new_by_co))
 
-    old_cids = {job.get("cid"): job for job in imported_jobs}
-    new_cids = {job.get("cid"): job for job in scraped_jobs}
-
-    added = [job for k, job in new_jobs.items() if k not in old_jobs]
-    removed = [job for k, job in old_jobs.items() if k not in new_jobs]
-    moved = [(old_cids[cid], new_cids[cid]) for cid in old_cids if cid in new_cids and job_key(old_cids[cid]) != job_key(new_cids[cid])]
-
-    # Write report
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    filename_tag = datetime.now().strftime("%m%d%H%M")
-    report_path = os.path.join(OUTPUT_DIR, f"Changes{filename_tag}.txt")
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("=== Added ===\n")
-        for job in added:
-            f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - {job.get('type', '?')} - {job.get('address', '?')} - WO {job.get('wo', '?')}\n")
-        f.write("\n=== Removed ===\n")
-        for job in removed:
-            f.write(f"{job.get('time', '?')} - {job.get('name', '?')} - {job.get('cid', '?')} - {job.get('type', '?')} - {job.get('address', '?')} - WO {job.get('wo', '?')}\n")
-        f.write("\n=== Moved ===\n")
-        for old, new in moved:
-            f.write(f"CID {old['cid']}: {old['time']} → {new['time']} | {old['address']} → {new['address']}\n")
+    path = os.path.join(OUTPUT_DIR, changes_filename)
 
-    return added, removed, moved
+    with open(path, 'w', encoding='utf-8') as f:
+        for co in companies:
+            f.write(f"{co}\n")
+            f.write("Added:\n")
+            for line in sorted(new_by_co[co] - old_by_co.get(co, set())):
+                f.write(f"  {line}\n")
+            f.write("\nRemoved:\n")
+            for line in sorted(old_by_co[co] - new_by_co.get(co, set())):
+                f.write(f"  {line}\n")
+            f.write("\n")
+
+    return path
 
 def export_txt(jobs, filename=None):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
@@ -500,36 +498,77 @@ def export_excel(jobs, filename=None):
     wb.save(out_path)
 
 def parse_imported_jobs(file_path):
-    jobs = []
     ext = os.path.splitext(file_path)[1].lower()
-    try:
-        if ext == ".txt":
-            with open(file_path, "r") as f:
-                for line in f:
-                    if " - " in line and "WO" in line:
-                        parts = line.strip().split(" - ")
-                        if len(parts) >= 6:
-                            jobs.append({
-                                "time": parts[0],
-                                "name": parts[1],
-                                "cid": parts[2],
-                                "type": parts[3],
-                                "address": parts[4],
-                                "wo": parts[5].replace("WO ", "").strip()
-                            })
-        elif ext == ".xlsx":
-            df = pd.read_excel(file_path, header=None)
-            for row in df.itertuples(index=False):
-                if len(row) >= 6 and isinstance(row[5], str) and "WO" in row[5]:
+    jobs = []
+
+    if ext == ".txt":
+        with open(file_path, "r", encoding="utf-8") as f:
+            current_company = None
+            current_date    = None
+
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+
+                # 1) Company header: any line without " - " and no digits
+                if " - " not in line and not any(c.isdigit() for c in line):
+                    current_company = line
+                    continue
+
+                # 2) Date header: matches M-D-YY or M-D-YYYY
+                if re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}$', line):
+                    current_date = line
+                    continue
+
+                # 3) Job line
+                if " - " in line and "WO" in line:
+                    parts = [p.strip() for p in line.split(" - ")]
+                    if len(parts) >= 6:
+                        time, name, cid, typ, addr, wo = parts[:6]
+                        jobs.append({
+                            "company": current_company,
+                            "date":    current_date,
+                            "time":    time,
+                            "name":    name,
+                            "cid":     cid,
+                            "type":    typ,
+                            "address": addr,
+                            "wo":      wo.replace("WO ", "")
+                        })
+
+    elif ext == ".xlsx":
+        df = pd.read_excel(file_path, header=None)
+        current_company = None
+        current_date    = None
+
+        for row in df.itertuples(index=False):
+            # flatten row to single string list
+            cells = [str(c).strip() for c in row if c and str(c).strip()]
+            if not cells:
+                continue
+
+            line = " - ".join(cells)
+            # same detection logic as above
+            if " - " not in line and not any(c.isdigit() for c in line):
+                current_company = line
+                continue
+            if re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}$', line):
+                current_date = line
+                continue
+            if " - " in line and "WO" in line:
+                parts = [p.strip() for p in line.split(" - ")]
+                if len(parts) >= 6:
+                    time, name, cid, typ, addr, wo = parts[:6]
                     jobs.append({
-                        "time": str(row[0]),
-                        "name": str(row[1]),
-                        "cid": str(row[2]),
-                        "type": str(row[3]),
-                        "address": str(row[4]),
-                        "wo": row[5].replace("WO ", "").strip()
+                        "company": current_company,
+                        "date":    current_date,
+                        "time":    time,
+                        "name":    name,
+                        "cid":     cid,
+                        "type":    typ,
+                        "address": addr,
+                        "wo":      wo.replace("WO ", "")
                     })
-    except Exception as e:
-        print(f"❌ Failed to parse imported file: {e}")
-        return None
+
     return jobs

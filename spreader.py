@@ -52,7 +52,6 @@ CITY_LIST = [
     "o'fallon", "o fallon", 'rolla', 'lebanon', 'columbia', 'fayette', 'jefferson city', 
     'lohman', 'sturgeon', 'harrisburg', 'ashland', 'boonville', 'centralia',
     'rocheport', 'moberly', 'hallsville', 'fulton', 'clark'
-    # Add more as needed!
 ]
 
 # Slot limits
