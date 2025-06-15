@@ -49,6 +49,17 @@ def run_scrape(app):
         app.log(f"❌ Driver init failed: {e}")
         return
 
+    # 2) explicitly perform login, with its own logging
+    app.log("🔐 Attempting to log in…")
+    try:
+        from utils import handle_login
+        handle_login(driver, app.log)
+        app.log("✅ Login successful.")
+    except Exception as e:
+        app.log(f"❌ Login failed: {e}")
+        driver.quit()
+        return
+
     tA = time.time()
     raw_jobs = scrape_jobs(
         driver=driver,
