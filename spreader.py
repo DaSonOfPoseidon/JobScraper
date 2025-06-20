@@ -17,7 +17,8 @@ CONTRACTORS = [
     "All Clear",
     "Maverick",
     "Socket",
-    "North Sky"
+    "North Sky",
+    'Uncategorized'
 ]
 
 # City assignment rules
