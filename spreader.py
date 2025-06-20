@@ -18,42 +18,106 @@ CONTRACTORS = [
     "Maverick",
     "Socket",
     "North Sky",
-    'Uncategorized'
+    "Unassigned"
 ]
 
-# City assignment rules
-CITY_MAP = {
-    'clinton': 'tgs',
-    'oak grove': 'tgs',
-    'warrensburg': 'tgs',
-    'sedalia': 'tgs',
-    'kirksville': 'subt',
-    "o fallon": 'subt',
-    "o'fallon": 'subt',
-    'rolla': 'pifer',
-    'lebanon': 'pifer',
-    'columbia': 'texstar',
-    'fayette': 'maverick',
-    'jefferson city': 'jeffcity',
-    'lohman': 'jeffcity',
-    'sturgeon': 'subt',
-    'harrisburg': 'subt',
-    'ashland': 'subt',
-    'boonville': 'subt',
-    'centralia': 'subt',
-    'rocheport': 'subt',
-    'moberly': 'subt',
-    'hallsville': 'subt',
-    'fulton': 'subt',
-    'clark': 'subt',
+
+LIMITS = {
+        "Tex-Star Communications": 7,
+        "North Sky": 3,
+        "Maverick": 2,
+        "Subterraneus Installs": 9,
+        "TGS Fiber": 8,
+        "Pifer Quality Communications": 3,
+        "All Clear": 1,
+        "Advanced Electric": 0,  # Never gets assigned
+        "Unassigned": float("inf"),
+        "Socket": float("inf"),
 }
 
-CITY_LIST = [
-    'clinton', 'oak grove', 'warrensburg', 'sedalia', 'kirksville',
-    "o'fallon", "o fallon", 'rolla', 'lebanon', 'columbia', 'fayette', 'jefferson city', 
-    'lohman', 'sturgeon', 'harrisburg', 'ashland', 'boonville', 'centralia',
-    'rocheport', 'moberly', 'hallsville', 'fulton', 'clark'
-]
+    # Helper: Area to assignment order map
+AREA_PRIORITY = {
+    "greater_boone": [
+        "Tex-Star Communications",
+        "North Sky",
+        "overflow_subt_tgs",  # special handling for round robin
+        "Maverick",
+        "Unassigned",
+    ],
+        "jc": [
+            "Maverick",
+            "All Clear",
+            "overflow_subt_tgs",
+            "Unassigned",
+        ],
+        "west": [
+            "TGS Fiber",
+            "Unassigned"
+        ],
+        "rolla": [
+            "Pifer Quality Communications",
+            "Subterraneus Installs",
+            "Unassigned"
+        ],
+        "kirksville": [
+            "Subterraneus Installs",
+            "Unassigned"
+        ],
+        "ofallon": [
+            "Subterraneus Installs",
+            "Unassigned"
+        ],
+        "unknown": [
+            "Unassigned"
+        ]
+}
+CITY_AREA = {
+        # Greater Boone/Columbia & neighbors (customize as needed)
+        "columbia": "greater_boone",
+        "hallsville": "greater_boone",
+        "sturgeon": "greater_boone",
+        "centralia": "greater_boone",
+        "ashland": "greater_boone",
+        "boonville": "greater_boone",
+        "rocheport": "greater_boone",
+        "harrisburg": "greater_boone",
+        "moberly": "greater_boone",
+        "fulton": "greater_boone",
+        "clark": "greater_boone",
+
+        # JC area
+        "jefferson city": "jc",
+        "lohman": "jc",
+
+        # West
+        "clinton": "west",
+        "oak grove": "west",
+        "warrensburg": "west",
+        "sedalia": "west",
+
+        # Rolla/Lebanon
+        "rolla": "rolla",
+        "lebanon": "rolla",
+
+        # Kirksville
+        "kirksville": "kirksville",
+
+        # O'Fallon
+        "o'fallon": "ofallon",
+        "o fallon": "ofallon"
+}
+
+CITY_LIST = list(CITY_AREA.keys())
+
+AREA_COVERAGE = {
+    "greater_boone": {"Tex-Star Communications", "North Sky", "Maverick", "Subterraneus Installs", "TGS Fiber"},
+    "jc": {"Maverick", "All Clear", "Subterraneus Installs", "TGS Fiber"},
+    "west": {"TGS Fiber"},
+    "rolla": {"Pifer Quality Communications", "Subterraneus Installs"},
+    "kirksville": {"Subterraneus Installs"},
+    "ofallon": {"Subterraneus Installs"},
+    "unknown": set()
+}
 
 # Slot limits
 TEXSTAR_LIMIT = 7
@@ -182,7 +246,7 @@ def write_change_log(added, removed, filename="job_changes.log"):
     print(f"[DONE] Change log written to {filename}")
 
 def reassign_jobs(sections):
-    # Parse all jobs into flat list
+    # Parse all jobs into a flat list with fields
     jobs = []
     for contractor, days in sections.items():
         for day in days:
@@ -190,7 +254,6 @@ def reassign_jobs(sections):
                 slot = extract_timeslot(job)
                 addr = extract_address(job)
                 city = parse_city(addr)
-                # ----- Extract job type as the 4th split item (strip spaces) -----
                 parts = [p.strip() for p in job.split(" - ")]
                 job_type = parts[3] if len(parts) > 3 else ""
                 jobs.append({
@@ -203,128 +266,83 @@ def reassign_jobs(sections):
                     'job_type': job_type
                 })
 
-    # Track slot counts
-    texstar_ct = defaultdict(int)
-    pifer_ct = defaultdict(int)
-    advanced_ct = defaultdict(int)
-    allclear_ct = defaultdict(int)
-    maverick_ct = defaultdict(int)
-    subt_rr = deque()
-    tgs_rr = deque()
-    move_comments = {}
+    # Track per-slot assignments per contractor
+    slot_counts = defaultdict(lambda: defaultdict(int))  # company -> (date, time) -> count
 
+    # Track round-robin overflow state for each slot for SubT/TGS
+    rr_state = defaultdict(lambda: deque(["Subterraneus Installs", "TGS Fiber"]))
+
+    move_comments = {}
     output_sections = {c: defaultdict(list) for c in CONTRACTORS}
 
-    # ROUND ROBIN for overflow
-    rr_state = deque(['Subterraneus Installs', 'TGS Fiber'])
+    # For minimal churn, pre-compute which companies can cover which areas
+    AREA_COVERAGE = {}
+    for area, priorities in AREA_PRIORITY.items():
+        # flatten round robin marker for coverage
+        AREA_COVERAGE[area] = set([p for p in priorities if not p.startswith('overflow_')])
 
     for job in jobs:
         key = (job['date'], job['time'])
-        cty = job['city']
-        group = get_city_group(cty)
         orig = job['contractor']
+        city = job['city']
+        job_line = job['line']
 
-        # ----- 5 Gig Conversion override -----
+        # 1. Special job type override (from your rules)
         if job['job_type'].lower() == "5 gig conversion":
             if orig != 'Socket':
-                move_comments[job['line']] = f"FORCED to Socket by job type rule (was {orig})"
-            output_sections['Socket'][key].append(job['line'])
+                move_comments[job_line] = f"FORCED to Socket by job type rule (was {orig})"
+            output_sections['Socket'][key].append(job_line)
+            slot_counts['Socket'][key] += 1
             continue
 
-        # FAYETTE -> Maverick
-        if group == 'maverick':
-            if orig != 'Maverick':
-                move_comments[job['line']] = f"MOVED from {orig}"
-            output_sections['Maverick'][key].append(job['line'])
+        # 2. Figure out area by city
+        area = CITY_AREA.get(city.lower(), "unknown")
+        priorities = AREA_PRIORITY.get(area, ["Unassigned"])
+
+        # 3. Minimal churn: if original contractor can cover this area and is under slot limit, keep it
+        if orig in AREA_COVERAGE.get(area, set()) and slot_counts[orig][key] < LIMITS.get(orig, 0):
+            output_sections[orig][key].append(job_line)
+            slot_counts[orig][key] += 1
             continue
 
-        # Tex-Star: Columbia (limit 8)
-        if group == 'texstar':
-            if orig == 'Tex-Star Communications' and texstar_ct[key] < TEXSTAR_LIMIT:
-                output_sections['Tex-Star Communications'][key].append(job['line'])
-                texstar_ct[key] += 1
-            elif texstar_ct[key] < TEXSTAR_LIMIT:
-                if orig != 'Tex-Star Communications':
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                output_sections['Tex-Star Communications'][key].append(job['line'])
-                texstar_ct[key] += 1
-            else:
-                # --- Begin new overflow logic ---
-                subt_count = len(output_sections['Subterraneus Installs'][key])
-                tgs_count = len(output_sections['TGS Fiber'][key])
-                # First fill either company up to 8, whichever has fewer (ties go to SubT for consistency)
-                if subt_count < 8 or tgs_count < 8:
-                    if subt_count <= tgs_count and subt_count < 8:
-                        target = 'Subterraneus Installs'
-                    elif tgs_count < 8:
-                        target = 'TGS Fiber'
+        # 4. Assign according to area priority
+        assigned = False
+        for p in priorities:
+            if p.startswith("overflow_"):
+                # Round robin overflow for SubT/TGS
+                subt_full = slot_counts["Subterraneus Installs"][key] >= LIMITS.get("Subterraneus Installs", 0)
+                tgs_full = slot_counts["TGS Fiber"][key] >= LIMITS.get("TGS Fiber", 0)
+                if subt_full and tgs_full:
+                    continue
+                for _ in range(2):  # Try each once
+                    target = rr_state[key][0]
+                    if slot_counts[target][key] < LIMITS.get(target, 0):
+                        if orig != target:
+                            move_comments[job_line] = f"MOVED from {orig} (overflow, balanced to {target})"
+                        output_sections[target][key].append(job_line)
+                        slot_counts[target][key] += 1
+                        assigned = True
+                        rr_state[key].rotate(-1)
+                        break
                     else:
-                        target = 'Subterraneus Installs'  # If both are 8 (shouldn't happen here)
-                else:
-                    # Both have at least 8: alternate to keep them even
-                    if subt_count <= tgs_count:
-                        target = 'Subterraneus Installs'
-                    else:
-                        target = 'TGS Fiber'
-                move_comments[job['line']] = f"MOVED from {orig} (TexStar overflow, balanced to {target})"
-                output_sections[target][key].append(job['line'])
-            continue
-
-        # Pifer: Rolla/Lebanon (limit 3)
-        if group == 'pifer':
-            if orig == 'Pifer Quality Communications' and pifer_ct[key] < PIFER_LIMIT:
-                output_sections['Pifer Quality Communications'][key].append(job['line'])
-                pifer_ct[key] += 1
-            elif pifer_ct[key] < PIFER_LIMIT:
-                if orig != 'Pifer Quality Communications':
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                output_sections['Pifer Quality Communications'][key].append(job['line'])
-                pifer_ct[key] += 1
+                        rr_state[key].rotate(-1)
+                if assigned:
+                    break
             else:
-                target = 'Subterraneus Installs'
-                if orig != target:
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                    output_sections[target][key].append(job['line'])
-            continue
+                if slot_counts[p][key] < LIMITS.get(p, 0):
+                    if orig != p:
+                        move_comments[job_line] = f"MOVED from {orig}"
+                    output_sections[p][key].append(job_line)
+                    slot_counts[p][key] += 1
+                    assigned = True
+                    break
 
-        # Jefferson City: Advanced (1), then All Clear (1), then round robin
-        if group == 'jeffcity':
-            if advanced_ct[key] < ADVANCED_LIMIT:
-                if orig != 'Advanced Electric':
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                output_sections['Advanced Electric'][key].append(job['line'])
-                advanced_ct[key] += 1
-            elif allclear_ct[key] < ALLCLEAR_LIMIT:
-                if orig != 'All Clear':
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                output_sections['All Clear'][key].append(job['line'])
-                allclear_ct[key] += 1
-            else:
-                target = rr_state[0]
-                if orig != target:
-                    move_comments[job['line']] = f"MOVED from {orig}"
-                output_sections[target][key].append(job['line'])
-                rr_state.rotate(-1)
-            continue
-
-        # SubT: All O'Fallon and Kirksville
-        if group == 'subt':
-            if orig != 'Subterraneus Installs':
-                move_comments[job['line']] = f"MOVED from {orig}"
-            output_sections['Subterraneus Installs'][key].append(job['line'])
-            continue
-
-        # TGS: ALL Clinton, Oak Grove, Warrensburg, Sedalia
-        if group == 'tgs':
-            if orig != 'TGS Fiber':
-                move_comments[job['line']] = f"MOVED from {orig}"
-            output_sections['TGS Fiber'][key].append(job['line'])
-            continue
-
-        # Anything else: Uncategorized
-        if orig != 'Uncategorized':
-            move_comments[job['line']] = f"MOVED from {orig}"
-        output_sections['Uncategorized'][key].append(job['line'])
+        # 5. If not assigned, put in Unassigned
+        if not assigned:
+            if orig != "Unassigned":
+                move_comments[job_line] = f"MOVED from {orig} (overflow, unassigned)"
+            output_sections["Unassigned"][key].append(job_line)
+            slot_counts["Unassigned"][key] += 1
 
     return output_sections, move_comments, jobs
 
