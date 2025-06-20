@@ -17,7 +17,7 @@ CONTRACTORS = [
     "All Clear",
     "Maverick",
     "Socket",
-    "Uncategorized"
+    "North Sky"
 ]
 
 # City assignment rules
@@ -55,10 +55,14 @@ CITY_LIST = [
 ]
 
 # Slot limits
-TEXSTAR_LIMIT = 8
+TEXSTAR_LIMIT = 7
 PIFER_LIMIT = 3
 ALLCLEAR_LIMIT = 1
-ADVANCED_LIMIT = 1
+ADVANCED_LIMIT = 0
+NORTHSKY_LIMIT = 3
+SUBT_LIMIT = 9
+TGS_LIMIT = 8
+MAVERICK_LIMIT = 2
 
 TIMESLOT_ORDER = ['8:00', '10:00', '12:00', '1:00', '3:00']
 
@@ -176,7 +180,6 @@ def write_change_log(added, removed, filename="job_changes.log"):
             f.write("\n")
     print(f"[DONE] Change log written to {filename}")
 
-
 def reassign_jobs(sections):
     # Parse all jobs into flat list
     jobs = []
@@ -277,11 +280,10 @@ def reassign_jobs(sections):
                 output_sections['Pifer Quality Communications'][key].append(job['line'])
                 pifer_ct[key] += 1
             else:
-                target = rr_state[0]
+                target = 'Subterraneus Installs'
                 if orig != target:
                     move_comments[job['line']] = f"MOVED from {orig}"
                     output_sections[target][key].append(job['line'])
-                rr_state.rotate(-1)
             continue
 
         # Jefferson City: Advanced (1), then All Clear (1), then round robin
