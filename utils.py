@@ -12,7 +12,7 @@ from dotenv import load_dotenv, set_key
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 
 HERE = os.path.abspath(os.path.dirname(__file__))
@@ -113,7 +113,6 @@ def load_cookies(driver, base_url=BASE_URL, filename=COOKIE_FILE):
 
     driver.refresh()
     return True
-
 
 def handle_login(driver, log=print):
     driver.get(BASE_URL)
@@ -384,6 +383,98 @@ def extract_wo_date(driver):
         print(f"⚠️ Could not extract WO date: {e}")
     return "Unknown"
 
+# Assignment
+def assign_contractor(driver, wo_number, desired_contractor, log=print):
+    """
+    Opens the WO assignment modal and re-assigns to the desired contractor.
+    - driver: Selenium webdriver, already on the correct WO page.
+    - wo_number: Work order number (string or int).
+    - desired_contractor: Contractor name as it appears in the dropdown.
+    - log: function for logging messages.
+    """
+    try:
+        # --- 1. Remove all currently assigned contractors (if any)
+        try:
+            remove_links = driver.find_elements(By.XPATH, "//a[contains(@onclick, 'removeContractor')]")
+            for link in remove_links:
+                driver.execute_script("arguments[0].scrollIntoView(true);", link)
+                driver.execute_script("arguments[0].click();", link)
+                time.sleep(1)
+        except Exception as e:
+            log(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+
+        # --- 2. Open the assignment modal AFTER removals
+        try:
+            driver.execute_script(f"assignContractor('{wo_number}');")
+            WebDriverWait(driver, 15).until(
+                EC.visibility_of_element_located((By.ID, "ContractorID"))
+            )
+            time.sleep(0.7)  # UI animation/popup settle
+        except Exception as e:
+            log(f"Could not trigger assignContractor JS on WO #{wo_number}: {e}")
+            return False
+
+        # --- 3. Assign the new contractor
+        try:
+            contractor_dropdown_elem = driver.find_element(By.ID, "ContractorID")
+            driver.execute_script("arguments[0].scrollIntoView(true);", contractor_dropdown_elem)
+            contractor_dropdown = Select(contractor_dropdown_elem)
+            contractor_dropdown.select_by_visible_text(desired_contractor)
+
+            role_dropdown_elem = driver.find_element(By.ID, "ContractorType")
+            driver.execute_script("arguments[0].scrollIntoView(true);", role_dropdown_elem)
+            role_dropdown = Select(role_dropdown_elem)
+            role_dropdown.select_by_visible_text("Primary")
+
+            # Hide overlays if needed
+            try:
+                file_list_elem = driver.find_element(By.ID, "FileList")
+                driver.execute_script("arguments[0].style.display = 'none';", file_list_elem)
+            except:
+                pass
+
+            assign_button_xpath = f"//input[@type='button' and @value='Assign' and @onclick=\"assignContractorSubmit('{wo_number}');\"]"
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, assign_button_xpath))
+            )
+            assign_button = driver.find_element(By.XPATH, assign_button_xpath)
+            driver.execute_script("arguments[0].scrollIntoView(true);", assign_button)
+            driver.execute_script("arguments[0].click();", assign_button)
+
+            time.sleep(0.8)
+            log(f"🏷️ Assigned contractor '{desired_contractor}' to WO #{wo_number}")
+            return True
+
+        except Exception as e:
+            log(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+            # Retry ONCE if it's an "element not interactable" error
+            if "element not interactable" in str(e).lower():
+                time.sleep(1.5)
+                try:
+                    driver.execute_script(f"assignContractor('{wo_number}');")
+                    WebDriverWait(driver, 10).until(
+                        EC.visibility_of_element_located((By.ID, "ContractorID"))
+                    )
+                    contractor_dropdown_elem = driver.find_element(By.ID, "ContractorID")
+                    driver.execute_script("arguments[0].scrollIntoView(true);", contractor_dropdown_elem)
+                    contractor_dropdown = Select(contractor_dropdown_elem)
+                    contractor_dropdown.select_by_visible_text(desired_contractor)
+                    role_dropdown_elem = driver.find_element(By.ID, "ContractorType")
+                    driver.execute_script("arguments[0].scrollIntoView(true);", role_dropdown_elem)
+                    role_dropdown = Select(role_dropdown_elem)
+                    role_dropdown.select_by_visible_text("Primary")
+                    assign_button = driver.find_element(By.XPATH, assign_button_xpath)
+                    driver.execute_script("arguments[0].scrollIntoView(true);", assign_button)
+                    driver.execute_script("arguments[0].click();", assign_button)
+                    log(f"🏷️ [Retry] Assigned contractor '{desired_contractor}' to WO #{wo_number}")
+                    return True
+                except Exception as e2:
+                    log(f"❌ [Retry] Failed again for WO #{wo_number}: {e2}")
+            return False
+
+    except Exception as e:
+        log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+        return False
 
 # Time + Data
 def get_output_tag(start, end): #File date stamp

@@ -209,9 +209,13 @@ def run_scrape(app):
             if os.path.exists(spread_file):
                 rel_path = os.path.relpath(spread_file, PROJECT_ROOT)
                 app.log(f"(Experimental) Recommended spread saved to {rel_path}")
+                if getattr(app, "show_approve_spread_popup", None):
+                    if app.run_spreader.get() and os.path.exists(spread_file):
+                        app.show_approve_spread_popup(spread_file)
             else:
                 app.log(f"(Experimental) Spreader failed: {spread_file}")
         except Exception as e:
             app.log(f"(Experimental) Spreader crashed: {e}")
     
     app.log(f"⏱️ Duration: {int(minutes)}:{int(seconds):02d} ({time.time() - t0:.2f}s)")
+

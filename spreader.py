@@ -174,6 +174,27 @@ def detect_date(line):
 def is_job_line(line):
     return bool(re.match(r'^\d{1,2}:\d{2}', line)) and 'WO ' in line
 
+def parse_moved_jobs_from_spread(spread_file):
+    moved_jobs = []
+    with open(spread_file, encoding="utf-8") as f:
+        current_contractor = None
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line in CONTRACTORS:
+                current_contractor = line
+                continue
+            # Match job line with WO and "# MOVED"
+            m = re.match(r".*WO (\d+).*(# MOVED.*)", line, re.IGNORECASE)
+            if m and current_contractor:
+                moved_jobs.append({
+                    "contractor": current_contractor,
+                    "wo": m.group(1),
+                    "line": line
+                })
+    return moved_jobs
+
 def parse_input(filename):
     # Returns {section: [{'date':..., 'jobs': [...]}]}
     sections = defaultdict(list)

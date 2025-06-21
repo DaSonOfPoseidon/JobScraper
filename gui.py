@@ -6,8 +6,12 @@ from tkinter import ttk, filedialog
 from tkinterdnd2 import DND_FILES
 from tkcalendar import DateEntry
 from datetime import datetime
-from utils import parse_imported_jobs
+from tkinter import messagebox
+from utils import parse_imported_jobs, assign_contractor
+from spreader import parse_moved_jobs_from_spread
 from scrape_runner import run_scrape
+from scraper_core import init_driver
+from utils import handle_login
 
 class CalendarBuddyGUI:
     def __init__(self, root):
@@ -128,6 +132,46 @@ class CalendarBuddyGUI:
     def start_scrape_thread(self):
         self.reset_throughput()
         threading.Thread(target=run_scrape, args=(self,), daemon=True).start()
+    
+    def show_approve_spread_popup(self, spread_file):
+        popup = tk.Toplevel(self.root)
+        popup.title("Apply Spread Changes?")
+        tk.Label(popup, text="Apply contractor reassignments now?").pack(padx=20, pady=10)
+
+        def do_reassign():
+            popup.destroy()
+            self.apply_spread_changes(spread_file)
+
+        def do_cancel():
+            popup.destroy()
+
+        btn_frame = tk.Frame(popup)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Reassign", command=do_reassign, width=12).pack(side="left", padx=10)
+        tk.Button(btn_frame, text="Not Now", command=do_cancel, width=12).pack(side="right", padx=10)
+        popup.grab_set()
+        popup.transient(self.root)
+        popup.wait_window()
+    
+    def apply_spread_changes(self, spread_file):
+        jobs = parse_moved_jobs_from_spread(spread_file)
+        if not jobs:
+            self.log("No moved jobs to reassign.")
+            return
+        driver = init_driver(headless=True)
+        handle_login(driver, self.log)
+        for job in jobs:
+            wo_number = job["wo"]
+            desired_contractor = job["contractor"]
+            try:
+                url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
+                driver.get(url)
+                time.sleep(2)
+                assign_contractor(driver, wo_number, desired_contractor)
+            except Exception as e:
+                self.log(f"Failed to process WO {wo_number}: {e}")
+        driver.quit()
+        self.log("Done applying spread changes.")
 
 if __name__ == "__main__":
     root = tk.Tk()
