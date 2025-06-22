@@ -3,9 +3,7 @@ from collections import defaultdict, deque
 import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
-import requests
 import os
-import time
 
 # ----------- CONFIGURABLE RULES -----------
 CONTRACTORS = [

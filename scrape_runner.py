@@ -1,14 +1,12 @@
 import os
-import re
 import time
-import threading
 import socket
+import asyncio
 from datetime import datetime, timedelta
 from math import ceil
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from scraper_core import scrape_jobs, init_driver, process_job_entries
-from utils import export_txt, export_excel, generate_changes_file,  handle_login, OUTPUT_DIR, PROJECT_ROOT
+from scraper_core import scrape_jobs, init_playwright_page, process_job_entries
+from utils import export_txt, export_excel, generate_changes_file, handle_login, OUTPUT_DIR, PROJECT_ROOT
 from emailer import send_job_results
 from spreader import run_process as run_spreader
 
@@ -33,7 +31,7 @@ def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=Non
         date_range = app.base_date.get()
         send_job_results(files, date_range, stats)
 
-def run_scrape(app):
+async def run_scrape(app):
     is_update = bool(app.imported_jobs)
     app.log("🚀 Starting full scrape...")
     t0 = time.time()
@@ -42,27 +40,22 @@ def run_scrape(app):
     mode = app.scrape_mode_choice.get()
     send_email = app.send_email.get()
 
-    try:
-        driver = init_driver(headless=True)
-        app.log("✅ Driver initialized.")
-    except Exception as e:
-        app.log(f"❌ Driver init failed: {e}")
-        return
+    playwright, browser, context, page = await init_playwright_page(headless=True)
 
     # 2) explicitly perform login, with its own logging
     app.log("🔐 Attempting to log in…")
     try:
-        from utils import handle_login
-        handle_login(driver, app.log)
+        await handle_login(page, app.log)
         app.log("✅ Login successful.")
     except Exception as e:
         app.log(f"❌ Login failed: {e}")
-        driver.quit()
+        browser.close()
+        playwright.stop()
         return
 
     tA = time.time()
-    raw_jobs = scrape_jobs(
-        driver=driver,
+    raw_jobs = await scrape_jobs(
+        page=page,
         mode=mode,
         imported_jobs=None,
         selected_day=selected_day,
@@ -70,7 +63,8 @@ def run_scrape(app):
         test_limit=app.test_limit.get(),
         log=app.log
     )
-    driver.quit()
+    await page.close()
+    await context.close()
     tB = time.time()
     print(f"Metadata Scrape took {tB-tA:.2f}s")
 
@@ -81,18 +75,23 @@ def run_scrape(app):
     app.progress_var.set(0)
     app.progress_bar["maximum"] = total_jobs
     app.counter_label.config(text=f"0 of {total_jobs} completed (0%)")
-    lock = threading.Lock()
+    lock = asyncio.Lock()
 
-    def thread_task(job_batch):
-        local_driver = init_driver(headless=True)
-        handle_login(local_driver)
+    async def worker(job_batch, idx):
+        worker_context, worker_page = await init_playwright_page(browser=browser, playwright=playwright)
+        await handle_login(worker_page)
         try:
             for job in job_batch:
                 if app.start_time is None:
                     app.start_time = time.perf_counter()
 
-                result = process_job_entries(local_driver, job, log=app.log)
-                with lock:
+                try:
+                    result = await process_job_entries(worker_page, job, log=print)
+                except Exception as e:
+                    job.setdefault("error", f"Failed: {e}")
+                    result = None
+
+                async with lock:
                     completed[0] += 1
                     app.progress_var.set(completed[0])
                     percent = (completed[0] / total_jobs) * 100
@@ -108,7 +107,8 @@ def run_scrape(app):
 
                         app.log(f"Failed to parse {job.get('cid')}")
         finally:
-            local_driver.quit()
+            await worker_page.close()
+            await worker_context.close()
 
     num_threads = app.worker_count.get()
     batch_size = ceil(len(raw_jobs) / num_threads)
@@ -116,10 +116,10 @@ def run_scrape(app):
 
     app.log("Processing Jobs...")
 
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = [executor.submit(thread_task, batch) for batch in batches]
-        for _ in as_completed(futures):
-            pass
+    await asyncio.gather(*(worker(batch, i) for i, batch in enumerate(batches)))
+
+    await browser.close()
+    await playwright.stop()
 
     output_dir = OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)

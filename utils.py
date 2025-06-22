@@ -1,30 +1,24 @@
 # utils.py
 import os
 import re
-import time
-import pickle
 from tkinter import Tk, messagebox, simpledialog
 import pandas as pd
-import threading
 from datetime import datetime
 from collections import defaultdict
 from dotenv import load_dotenv, set_key
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
-from selenium.webdriver.support import expected_conditions as EC
+from playwright.async_api import TimeoutError as PlaywrightTimeout
+
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
 
 BASE_URL = "http://inside.sockettelecom.com/"
-COOKIE_FILE = os.path.join(PROJECT_ROOT, "cookies.pkl")
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "Outputs")
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
-cookie_lock = threading.Lock()
 class NoWOError(Exception):
     pass
 class NoOpenWOError(Exception):
@@ -70,167 +64,79 @@ def check_env_or_prompt_login(log=print):
 
 
 # Login + Session
-def save_cookies(driver, filename=COOKIE_FILE):
-    with cookie_lock:
-        raw = driver.get_cookies()
-    safe = []
-    for c in raw:
-        entry = {k: c[k] for k in ("name","value","domain","path","expiry","secure","httpOnly") if k in c}
-        safe.append(entry)
-    with open(filename, "wb") as f:
-        pickle.dump(safe, f)
+async def handle_login(page, log=print):
+    await page.goto("http://inside.sockettelecom.com/")
+    # If already logged in:
+    if "login.php" not in page.url:
+        log("✅ Session restored with stored state.")
+        await clear_first_time_overlays(page)
+        return
 
-def load_cookies(driver, base_url=BASE_URL, filename=COOKIE_FILE):
-    if not os.path.exists(filename):
-        return False
+    # Otherwise, login with creds
+    user, pw = check_env_or_prompt_login(log)
+    await page.goto("http://inside.sockettelecom.com/system/login.php")
+    await page.fill("input[name='username']", user)
+    await page.fill("input[name='password']", pw)
+    await page.click("#login")
+    await page.wait_for_selector("iframe#MainView", timeout=10_000)
+    await clear_first_time_overlays(page)
+    # Save state for next run
+    await page.context.storage_state(path="state.json")
+    log("✅ Logged in via credentials.")
 
-    try:
-        with cookie_lock:
-            saved = pickle.load(open(filename, "rb"))
-    except Exception:
-        # Bad file → delete and force a fresh login next time
-        os.remove(filename)
-        return False
-
-    # Navigate to host so cookies can be applied
-    driver.get(base_url)
-    host = base_url.split("://",1)[1].split("/",1)[0]
-
-    injected = False
-    for c in saved:
-        c["domain"] = host
-        try:
-            driver.add_cookie(c)
-            injected = True
-        except Exception as e:
-            # skip malformed cookies
-            print(f"⚠️ Skipping cookie {c.get('name')}: {e}")
-
-    if not injected:
-        # No valid cookies → delete file to avoid repeated failures
-        os.remove(filename)
-        return False
-
-    driver.refresh()
-    return True
-
-def handle_login(driver, log=print):
-    driver.get(BASE_URL)
-
-    if load_cookies(driver):
-        if not login_failed(driver):
-            log("✅ Session restored via cookies.")
-            clear_first_time_overlays(driver)
-            return
-        else:
-            log("⚠️ Cookie session invalid—deleting and retrying with credentials.")
-            try: os.remove(COOKIE_FILE)
-            except OSError: pass
-
-    # === Fallback to credential login ===
-    while "login.php" in driver.current_url or "Username" in driver.page_source:
-        username, password = check_env_or_prompt_login(log)
-        if not (username and password):
-            log("❌ Login cancelled.")
-            return
-
-        perform_login(driver, username, password)
-        WebDriverWait(driver, 10).until(
-            lambda d: "menu.php" in d.current_url or "calendar" in d.page_source
-        )
-
-        if not login_failed(driver):
-            save_cookies(driver)   # <-- write fresh cookies
-            log("✅ Logged in with username/password.")
-            return
-        else:
-            log("❌ Login failed. Re-prompting...")
-
-def perform_login(driver, USERNAME, PASSWORD):
-    driver.get("http://inside.sockettelecom.com/system/login.php")
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-    driver.find_element(By.NAME, "username").send_keys(USERNAME)
-    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
-    driver.find_element(By.ID, "login").click()
-    clear_first_time_overlays(driver)
-
-def login_failed(driver):
-    try:
-        return (
-            "login.php" in driver.current_url
-            or "Username" in driver.page_source
-            or "Invalid username or password" in driver.page_source
-        )
-    except Exception:
-        return True  # if we can't read the page, assume failure
-
-
-# Popups
-def dismiss_alert(driver):
-    try:
-        for _ in range(3):
-            WebDriverWait(driver, 1).until(EC.alert_is_present())
-            alert = driver.switch_to.alert
-            alert.dismiss()
-    except:
-        pass
-
-def force_dismiss_any_alert(driver): 
-    try:
-        WebDriverWait(driver, 1).until(EC.alert_is_present())
-        alert = driver.switch_to.alert
-        alert.dismiss()
-    except:
-        pass
-
-def clear_first_time_overlays(driver):
-    # Dismiss alert if present
-    try:
-        WebDriverWait(driver, 0.5).until(EC.alert_is_present())
-        driver.switch_to.alert.dismiss()
-    except:
-        pass
-
-    # Known popup buttons
-    buttons = [
-        "//form[@id='valueForm']//input[@type='button']",
-        "//form[@id='f']//input[@type='button']"
+# Browser Interaction
+async def clear_first_time_overlays(page):
+    selectors = [
+        'xpath=//input[@id="valueForm1" and @type="button"]',
+        'xpath=//input[@value="Close This" and @type="button"]',
+        'xpath=//form[starts-with(@id,"valueForm")]//input[@type="button"]',
+        'xpath=//form[@id="f"]//input[@type="button"]'
     ]
-    for xpath in buttons:
-        try:
-            WebDriverWait(driver, 0.5).until(EC.element_to_be_clickable((By.XPATH, xpath))).click()
-        except:
-            pass
+    for sel in selectors:
+        while True:
+            try:
+                btn = await page.wait_for_selector(sel, timeout=500)
+                await btn.click()
+                await page.wait_for_timeout(200)
+            except PlaywrightTimeout:
+                break
 
-    # Iframe switch loop
-    for _ in range(3):
-        try:
-            WebDriverWait(driver, 0.5).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
-            return
-        except:
-            time.sleep(0.25)
-    print("❌ Could not switch to MainView iframe.")
-
-
-# Scraping
-def extract_cid_and_time(job_elem):
+async def extract_cid_and_time(link, text):
     try:
-        text = job_elem.find_element(By.CLASS_NAME, "fc-title").text
-        time_text = job_elem.find_element(By.CLASS_NAME, "fc-time").get_attribute("data-start")
-        name, cid = re.findall(r"(.*?) - (\d{4}-\d{4}-\d{4})", text)[0]
-        return cid.strip(), name.strip(), time_text.strip()
+        # Split lines
+        lines = text.strip().split("\n")
+        if len(lines) < 3:
+            return None, None, None
+        time_slot = lines[0].strip()
+        # lines[1] = job type/area, usually not needed here
+        third_line = lines[2].strip()
+        # Now split the third line by ' - '
+        parts = third_line.split(" - ")
+        if len(parts) < 3:
+            return None, None, None
+        name = parts[0].strip()
+        cid = parts[1].strip()
+        # Optional: parse order #
+        order_match = re.search(r'Order\s*#:(\d+)', parts[2])
+        order_num = order_match.group(1) if order_match else None
+        return cid, name, time_slot
     except Exception as e:
         print(f"❌ Error extracting CID/time: {e}")
         return None, None, None
 
-def get_contractor_assignments(driver):
+async def get_contractor_assignments(page):
     try:
-        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "contractorsection")))
-        section_text = driver.find_element(By.CLASS_NAME, "contractorsection").text.strip()
-        for line in section_text.splitlines():
+        # Wait for contractor section to show up
+        await page.wait_for_selector(".contractorsection", timeout=5000)
+        section_elem = await page.query_selector(".contractorsection")
+        if not section_elem:
+            return "Unknown"
+        section_text = (await section_elem.inner_text()).strip()
+        lines = section_text.splitlines()
+        for line in lines:
             if " - (Primary" in line:
                 return line.split(" - ")[0].strip()
-        for line in section_text.splitlines():
+        for line in lines:
             if "assigned to this work order" not in line and "Contractors" not in line:
                 return line.split(" - ")[0].strip()
         return "Unknown"
@@ -238,98 +144,102 @@ def get_contractor_assignments(driver):
         print(f"❌ Could not find contractor name: {e}")
         return "Unknown"
 
-def get_work_order_url(driver, log=None):
+async def get_work_order_url(frame, log=print):
+    """
+    Find newest (highest-numbered) in-process Fiber Install WO on customer page.
+    Raises NoWOError or NoOpenWOError if not found.
+    Returns (absolute_url, wo_number).
+    """
     try:
-        dismiss_alert(driver)
-        WebDriverWait(driver, 5, poll_frequency=0.05).until(
-            lambda d: d.find_element(By.ID, "workShow").is_displayed()
-        )
+        # Wait for the work order table to load (more general selector)
+        try:
+            await frame.wait_for_selector("#custWork #workShow table", timeout=10_000)
+        except Exception:
+            log("❌ Work Orders table not found inside frame!")
+            raise NoWOError("Work Orders table not found!")
+        rows = await frame.query_selector_all("#custWork #workShow table tr")
+        if not rows:
+            log("❌ No work order rows found inside table.")
+            raise NoWOError("No work order rows found!")
 
-        # gather all install-fiber WOs
-        rows = driver.find_elements(
-            By.XPATH, "//div[@id='workShow']//table//tr[position()>1]"
-        )
-        install_wos = []
+        matches = []
         for row in rows:
-            cols = row.find_elements(By.TAG_NAME, "td")
-            if len(cols) < 5:
+            tds = await row.query_selector_all("td")
+            if len(tds) < 5:
                 continue
-            wo_num = cols[0].text.strip()
-            desc   = cols[1].text.strip().lower()
-            job_type = cols[2].text.strip().lower()
-            status = cols[3].text.strip().lower()
-            url    = cols[4].find_element(By.TAG_NAME, "a").get_attribute("href")
-            if "install" in job_type and "fiber" in job_type:
-                install_wos.append((int(wo_num), status, url))
 
-        # 1) no install WOs at all
-        if not install_wos:
-            if log:
-                log("⚠️ No install WOs found on page")
-            raise NoWOError("No install work orders found")
+            first = (await tds[0].inner_text()).strip()
+            # skip header or invalid rows
+            if first == "#" or not first.isdigit():
+                continue
 
-        # 2) any “in process” WOs?
-        in_process = [wo for wo in install_wos if "in process" in wo[1]]
-        if in_process:
-            best = max(in_process, key=lambda x: x[0])
-            return best[2], best[0]
+            wo_number = int(first)
+            job_type = (await tds[2].inner_text()).strip()
+            status   = (await tds[3].inner_text()).strip()
+            # Only match "Fiber Install" AND "In Process"
+            if all(s in job_type for s in ["Fiber", "Install"]) and "In Process" in status:
+                link_td = await tds[4].query_selector("a")
+                href = await link_td.get_attribute('href') if link_td else None
+                matches.append((wo_number, href))
 
-        # 3) any “open” or “scheduled” WOs?
-        open_wos = [wo for wo in install_wos if "open" in wo[1] or "scheduled" in wo[1]]
-        if open_wos:
-            best = max(open_wos, key=lambda x: x[0])
-            return best[2], best[0]
+        if not matches:
+            # Fallback: any "Fiber Install", even if not "In Process"
+            for row in rows:
+                tds = await row.query_selector_all("td")
+                if len(tds) < 5:
+                    continue
+                job_type = (await tds[2].inner_text()).strip()
+                if all(s in job_type for s in ["Fiber", "Install"]):
+                    raise NoOpenWOError("No open (In Process) Fiber Install WO found.")
+            raise NoWOError("No Fiber Install WO found at all.")
 
-        # 4) install WOs exist but none are open/scheduled
-        if log:
-            log("⚠️ Found install WOs, but none are open or scheduled")
-        raise NoOpenWOError("Install work orders exist but none are open")
+        # Return WO with the highest number (most recent)
+        wo_number, url = max(matches, key=lambda x: x[0])
+        # Make sure URL is absolute
+        if url and url.startswith("/"):
+            url = "http://inside.sockettelecom.com" + url
+        return url, wo_number
 
-    except (NoWOError, NoOpenWOError):
-        # propagate our custom errors so caller can set job["error"] appropriately
+    except NoWOError:
         raise
-
+    except NoOpenWOError:
+        raise
     except Exception as e:
-        # all other errors get your original fallback
-        if log:
-            log(f"❌ Error finding work order URL: {e}")
-        else:
-            print(f"❌ Error finding work order URL: {e}")
-        return None, None
+        log(f"❌ Error in get_work_order_url: {e}")
+        raise NoWOError(str(e))
 
-def get_job_type_and_address(driver):
-    wait = WebDriverWait(driver, 10)
-
+async def get_job_type_and_address(page):
     # 1) Grab the address for city-inspection
     address = "Unknown"
     try:
-        address = driver.find_element(
-            By.XPATH,
-            "//a[contains(@href, 'viewServiceMap')]"
-        ).text.strip()
-    except:
+        addr_elem = await page.query_selector("a[href*='viewServiceMap']")
+        if addr_elem:
+            address = (await addr_elem.inner_text()).strip()
+    except Exception:
         pass
 
     # 2) Read the packageName <b> text for actual package info
     package_info = ""
     try:
-        pkg_elem = driver.find_element(
-            By.CSS_SELECTOR,
-            ".packageName.text-indent b"
-        )
-        package_info = pkg_elem.text.strip()
-    except:
+        pkg_elem = await page.query_selector(".packageName.text-indent b")
+        if pkg_elem:
+            package_info = (await pkg_elem.inner_text()).strip()
+    except Exception:
         pass
     pkg_lower = package_info.lower()
 
     # 3) Grab the description (for connectorized check)
     desc_text = ""
     try:
-        desc_text = driver.find_element(
-            By.XPATH,
-            "//td[contains(text(), 'Description:')]/following-sibling::td"
-        ).text.strip().lower()
-    except:
+        desc_elem = await page.query_selector("td.detailHeader:has-text('Description:') + td.detailData")
+        if desc_elem:
+            desc_text = (await desc_elem.inner_text()).strip().lower()
+        else:
+            # fallback for XPath
+            desc_elem = await page.query_selector("//td[contains(text(), 'Description:')]/following-sibling::td[1]")
+            if desc_elem:
+                desc_text = (await desc_elem.inner_text()).strip().lower()
+    except Exception:
         pass
 
     # 4) OFFICIAL 5 Gig check 
@@ -371,110 +281,80 @@ def get_job_type_and_address(driver):
 
     return job_type, address
 
-def extract_wo_date(driver):
+async def extract_wo_date(page):
     try:
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "scheduledEventList")))
-        text = driver.find_element(By.ID, "scheduledEventList").text.strip()
-        match = re.search(r"(\d{4}-\d{2}-\d{2})", next((line for line in text.splitlines() if "Fiber Install" in line), ""))
+        # Wait for the scheduled event section to load
+        await page.wait_for_selector("#scheduledEventList", timeout=10_000)
+        text = (await page.locator("#scheduledEventList").inner_text()).strip()
+        # Find line with "Fiber Install"
+        fiber_line = next((line for line in text.splitlines() if "Fiber Install" in line), "")
+        match = re.search(r"(\d{4}-\d{2}-\d{2})", fiber_line)
         if match:
             parsed_date = datetime.strptime(match.group(1), "%Y-%m-%d")
-            return parsed_date.strftime("%#m-%#d-%y") if os.name == "nt" else parsed_date.strftime("%-m-%-d-%y")
+            # Windows: %#m, Linux/mac: %-m
+            fmt = "%#m-%#d-%y" if os.name == "nt" else "%-m-%-d-%y"
+            return parsed_date.strftime(fmt)
     except Exception as e:
         print(f"⚠️ Could not extract WO date: {e}")
     return "Unknown"
 
-# Assignment
-def assign_contractor(driver, wo_number, desired_contractor, log=print):
-    """
-    Opens the WO assignment modal and re-assigns to the desired contractor.
-    - driver: Selenium webdriver, already on the correct WO page.
-    - wo_number: Work order number (string or int).
-    - desired_contractor: Contractor name as it appears in the dropdown.
-    - log: function for logging messages.
-    """
+async def assign_contractor(page, wo_number, desired_contractor_full, log=print):  # COMPANY ASSIGNMENT
     try:
-        # --- 1. Remove all currently assigned contractors (if any)
-        try:
-            remove_links = driver.find_elements(By.XPATH, "//a[contains(@onclick, 'removeContractor')]")
-            for link in remove_links:
-                driver.execute_script("arguments[0].scrollIntoView(true);", link)
-                driver.execute_script("arguments[0].click();", link)
-                time.sleep(1)
-        except Exception as e:
-            log(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+        # 🧠 Trigger the assignment UI via JavaScript
+        await page.evaluate(f"assignContractor('{wo_number}');")
+        await page.wait_for_selector("#ContractorID", timeout=10_000)
+        await page.wait_for_timeout(500)  # let modal settle
 
-        # --- 2. Open the assignment modal AFTER removals
-        try:
-            driver.execute_script(f"assignContractor('{wo_number}');")
-            WebDriverWait(driver, 15).until(
-                EC.visibility_of_element_located((By.ID, "ContractorID"))
-            )
-            time.sleep(0.7)  # UI animation/popup settle
-        except Exception as e:
-            log(f"Could not trigger assignContractor JS on WO #{wo_number}: {e}")
-            return False
+        # ✅ Get current contractor assignment from the page
+        contractor_texts = [
+            text.strip()
+            for text in await page.locator("b").all_inner_texts()
+        ]
+        current_contractor = None
+        for text in contractor_texts:
+            if " - (Primary" in text:
+                current_contractor = text.split(" - ")[0].strip()
+                break
 
-        # --- 3. Assign the new contractor
-        try:
-            contractor_dropdown_elem = driver.find_element(By.ID, "ContractorID")
-            driver.execute_script("arguments[0].scrollIntoView(true);", contractor_dropdown_elem)
-            contractor_dropdown = Select(contractor_dropdown_elem)
-            contractor_dropdown.select_by_visible_text(desired_contractor)
+        if current_contractor == desired_contractor_full:
+            log(f"✅ Contractor '{current_contractor}' already assigned to WO #{wo_number}")
+            return
 
-            role_dropdown_elem = driver.find_element(By.ID, "ContractorType")
-            driver.execute_script("arguments[0].scrollIntoView(true);", role_dropdown_elem)
-            role_dropdown = Select(role_dropdown_elem)
-            role_dropdown.select_by_visible_text("Primary")
+        log(f"🧹 Reassigning from '{current_contractor}' → '{desired_contractor_full}'")
 
-            # Hide overlays if needed
+        # 🧽 Remove currently assigned contractors
+        remove_links = page.locator("a", has_text="Remove")
+        count = await remove_links.count()
+        for i in range(count):
             try:
-                file_list_elem = driver.find_element(By.ID, "FileList")
-                driver.execute_script("arguments[0].style.display = 'none';", file_list_elem)
-            except:
-                pass
+                link = remove_links.nth(i)
+                await link.scroll_into_view_if_needed()
+                await link.click()
+                await page.wait_for_timeout(500)
+            except Exception as e:
+                log(f"❌ Could not remove contractor: {e}")
 
-            assign_button_xpath = f"//input[@type='button' and @value='Assign' and @onclick=\"assignContractorSubmit('{wo_number}');\"]"
-            WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, assign_button_xpath))
-            )
-            assign_button = driver.find_element(By.XPATH, assign_button_xpath)
-            driver.execute_script("arguments[0].scrollIntoView(true);", assign_button)
-            driver.execute_script("arguments[0].click();", assign_button)
+        # 🏷️ Assign the new contractor
+        contractor_dropdown = page.locator("#ContractorID")
+        await contractor_dropdown.select_option(label=desired_contractor_full)
+        role_dropdown = page.locator("#ContractorType")
+        await role_dropdown.select_option(label="Primary")
 
-            time.sleep(0.8)
-            log(f"🏷️ Assigned contractor '{desired_contractor}' to WO #{wo_number}")
-            return True
+        # Hide any modal overlays if needed (FileList)
+        try:
+            file_list_elem = page.locator("#FileList")
+            if await file_list_elem.is_visible():
+                await page.evaluate("(el) => el.style.display = 'none'", file_list_elem)
+        except Exception:
+            pass  # It's okay if FileList isn't present
 
-        except Exception as e:
-            log(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
-            # Retry ONCE if it's an "element not interactable" error
-            if "element not interactable" in str(e).lower():
-                time.sleep(1.5)
-                try:
-                    driver.execute_script(f"assignContractor('{wo_number}');")
-                    WebDriverWait(driver, 10).until(
-                        EC.visibility_of_element_located((By.ID, "ContractorID"))
-                    )
-                    contractor_dropdown_elem = driver.find_element(By.ID, "ContractorID")
-                    driver.execute_script("arguments[0].scrollIntoView(true);", contractor_dropdown_elem)
-                    contractor_dropdown = Select(contractor_dropdown_elem)
-                    contractor_dropdown.select_by_visible_text(desired_contractor)
-                    role_dropdown_elem = driver.find_element(By.ID, "ContractorType")
-                    driver.execute_script("arguments[0].scrollIntoView(true);", role_dropdown_elem)
-                    role_dropdown = Select(role_dropdown_elem)
-                    role_dropdown.select_by_visible_text("Primary")
-                    assign_button = driver.find_element(By.XPATH, assign_button_xpath)
-                    driver.execute_script("arguments[0].scrollIntoView(true);", assign_button)
-                    driver.execute_script("arguments[0].click();", assign_button)
-                    log(f"🏷️ [Retry] Assigned contractor '{desired_contractor}' to WO #{wo_number}")
-                    return True
-                except Exception as e2:
-                    log(f"❌ [Retry] Failed again for WO #{wo_number}: {e2}")
-            return False
+        assign_button = page.locator("input[type='button'][value='Assign']")
+        await assign_button.click()
+
+        log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
 
     except Exception as e:
         log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
-        return False
 
 # Time + Data
 def get_output_tag(start, end): #File date stamp

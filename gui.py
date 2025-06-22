@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import asyncio
 import tkinter as tk
 from tkinter import ttk, filedialog
 from tkinterdnd2 import DND_FILES
@@ -10,7 +11,7 @@ from tkinter import messagebox
 from utils import parse_imported_jobs, assign_contractor
 from spreader import parse_moved_jobs_from_spread
 from scrape_runner import run_scrape
-from scraper_core import init_driver
+from scraper_core import init_playwright_page
 from utils import handle_login
 
 class CalendarBuddyGUI:
@@ -131,7 +132,7 @@ class CalendarBuddyGUI:
 
     def start_scrape_thread(self):
         self.reset_throughput()
-        threading.Thread(target=run_scrape, args=(self,), daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(run_scrape(self)), daemon=True).start()
     
     def show_approve_spread_popup(self, spread_file):
         popup = tk.Toplevel(self.root)
@@ -140,7 +141,7 @@ class CalendarBuddyGUI:
 
         def do_reassign():
             popup.destroy()
-            self.apply_spread_changes(spread_file)
+            self.start_apply_spread_changes(spread_file, self.log)
 
         def do_cancel():
             popup.destroy()
@@ -153,25 +154,35 @@ class CalendarBuddyGUI:
         popup.transient(self.root)
         popup.wait_window()
     
-    def apply_spread_changes(self, spread_file):
+    def start_apply_spread_changes(self, spread_file):
+        threading.Thread(
+            target=lambda: asyncio.run(self.apply_spread_changes(spread_file)), daemon=True
+        ).start()
+    
+    async def apply_spread_changes(self, spread_file):
         jobs = parse_moved_jobs_from_spread(spread_file)
         if not jobs:
             self.log("No moved jobs to reassign.")
             return
-        driver = init_driver(headless=True)
-        handle_login(driver, self.log)
-        for job in jobs:
-            wo_number = job["wo"]
-            desired_contractor = job["contractor"]
-            try:
-                url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
-                driver.get(url)
-                time.sleep(2)
-                assign_contractor(driver, wo_number, desired_contractor)
-            except Exception as e:
-                self.log(f"Failed to process WO {wo_number}: {e}")
-        driver.quit()
-        self.log("Done applying spread changes.")
+        playwright, browser, context, page = await init_playwright_page(headless=True)
+        try:
+            await handle_login(page, log=self.log)
+            for job in jobs:
+                wo_number = job["wo"]
+                desired_contractor = job["contractor"]
+                try:
+                    url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
+                    await page.goto(url)
+                    await asyncio.sleep(2)
+                    await assign_contractor(page, wo_number, desired_contractor)
+                except Exception as e:
+                    self.log(f"Failed to process WO {wo_number}: {e}")
+            self.log("Done applying spread changes.")
+        finally:
+            await page.close()
+            await context.close()
+            await browser.close()
+            await playwright.stop()
 
 if __name__ == "__main__":
     root = tk.Tk()
