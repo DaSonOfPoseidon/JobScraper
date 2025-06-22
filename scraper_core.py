@@ -1,5 +1,6 @@
 # scraper_core.py
 import traceback
+import time
 from datetime import datetime
 from datetime import timedelta
 from dateutil import parser as dateparser
@@ -27,7 +28,8 @@ async def init_playwright_page(headless: bool = True, browser=None, playwright=N
                 "--disable-usb-keyboard-detect",
                 "--disable-hid-detection",
                 "--log-level=3",
-                "--blink-settings=imagesEnabled=false"
+                "--blink-settings=imagesEnabled=false",
+                "--headless=new"
             ],
         )
         owns_browser = True  # So caller can close these later
@@ -162,14 +164,20 @@ async def process_job_entries(page: Page, job: dict, log=print):
     customer_url = CUSTOMER_URL_TEMPLATE.format(cid)
 
     try:
+        t0 = time.perf_counter()
         await page.goto(customer_url)
+        print(f"[{cid}] Customer page took {time.perf_counter() - t0:.2f}s to load")
         if clear_first_time_overlays:
+            t0 = time.perf_counter()
             await clear_first_time_overlays(page)
+            print(f"[{cid}] Clear overlay took {time.perf_counter() - t0:.2f}s")
 
         # Switch to MainView iframe
         try:
+            t0 = time.perf_counter()
             await page.wait_for_selector('iframe[name="MainView"]', timeout=10_000)
             frame = page.frame(name="MainView")
+            print(f"[{cid}] Find and assign MainView took {time.perf_counter() - t0:.2f}s")
         except PlaywrightTimeout:
             frame = page.main_frame()
 
@@ -183,7 +191,9 @@ async def process_job_entries(page: Page, job: dict, log=print):
                 return False
 
         try:
+            t0 = time.perf_counter()
             workorder_url, wo_number = await asyncio.wait_for(_wait_for_work_order(), timeout=5)
+            print(f"[{cid}] WO URL Scrape took {time.perf_counter() - t0:.2f}s")
         except (NoWOError, NoOpenWOError) as e:
             job["error"] = str(e)
             log(f"[{cid}] No work order found: {e}")
@@ -195,11 +205,19 @@ async def process_job_entries(page: Page, job: dict, log=print):
             log(f"[{cid}] No workorder_url found, skipping job")
             return None
 
+        t0 = time.perf_counter()
         await page.goto(workorder_url)
+        print(f"[{cid}] WO took {time.perf_counter() - t0:.2f}s to load")
 
+        t0 = time.perf_counter()
         job_type, address = (await get_job_type_and_address(page)) if get_job_type_and_address else (None, None)
+        print(f"[{cid}] job type took {time.perf_counter() - t0:.2f}s")
+        t0 = time.perf_counter()
         contractor_info = (await get_contractor_assignments(page)) if get_contractor_assignments else None
+        print(f"[{cid}] Contractor extract took {time.perf_counter() - t0:.2f}s")
+        t0 = time.perf_counter()
         job_date = (await extract_wo_date(page)) if extract_wo_date else None
+        print(f"[{cid}] Date extract took {time.perf_counter() - t0:.2f}s")
 
         return {
             "company": contractor_info,

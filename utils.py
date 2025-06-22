@@ -86,20 +86,21 @@ async def handle_login(page, log=print):
 
 # Browser Interaction
 async def clear_first_time_overlays(page):
-    selectors = [
-        'xpath=//input[@id="valueForm1" and @type="button"]',
-        'xpath=//input[@value="Close This" and @type="button"]',
-        'xpath=//form[starts-with(@id,"valueForm")]//input[@type="button"]',
-        'xpath=//form[@id="f"]//input[@type="button"]'
-    ]
-    for sel in selectors:
-        while True:
-            try:
-                btn = await page.wait_for_selector(sel, timeout=500)
-                await btn.click()
-                await page.wait_for_timeout(200)
-            except PlaywrightTimeout:
-                break
+    # 1. Vision/Mission (Purpose)
+    try:
+        btn = await page.wait_for_selector('form#valueForm1 input[type="button"][value="Close This"]', timeout=200)
+        await btn.click()
+        await page.wait_for_timeout(100)  # Let DOM update if needed
+    except PlaywrightTimeout:
+        pass
+
+    # 2. Soul Killer (Task Reminder)
+    try:
+        btn = await page.wait_for_selector('form#f input#f1[type="button"][value="Close This"]', timeout=200)
+        await btn.click()
+        await page.wait_for_timeout(100)
+    except PlaywrightTimeout:
+        pass
 
 async def extract_cid_and_time(link, text):
     try:
