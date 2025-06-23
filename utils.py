@@ -86,21 +86,15 @@ async def handle_login(page, log=print):
 
 # Browser Interaction
 async def clear_first_time_overlays(page):
-    # 1. Vision/Mission (Purpose)
-    try:
-        btn = await page.wait_for_selector('form#valueForm1 input[type="button"][value="Close This"]', timeout=200)
-        await btn.click()
-        await page.wait_for_timeout(100)  # Let DOM update if needed
-    except PlaywrightTimeout:
-        pass
-
-    # 2. Soul Killer (Task Reminder)
-    try:
-        btn = await page.wait_for_selector('form#f input#f1[type="button"][value="Close This"]', timeout=200)
-        await btn.click()
-        await page.wait_for_timeout(100)
-    except PlaywrightTimeout:
-        pass
+    selectors = [
+        'input#valueForm1[type="button"][value="Close This"]',  # Vision/Mission
+        'input#f1[type="button"][value="Close This"]',          # Soulkiller
+    ]
+    for sel in selectors:
+        btn = await page.query_selector(sel)  # Non-blocking: 0ms if not present
+        if btn:
+            await btn.click()
+            await page.wait_for_timeout(100)  # Let DOM update if needed
 
 async def extract_cid_and_time(link, text):
     try:

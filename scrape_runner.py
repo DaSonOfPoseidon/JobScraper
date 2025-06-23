@@ -10,6 +10,8 @@ from utils import export_txt, export_excel, generate_changes_file, handle_login,
 from emailer import send_job_results
 from spreader import run_process as run_spreader
 
+INTERESTING_CODES = [429, 403, 503]
+
 def handle_exports(app, results, txt_filename, excel_filename, unparsed_jobs=None, stats=None):
     files = []
 
@@ -79,6 +81,7 @@ async def run_scrape(app):
 
     async def worker(job_batch, idx):
         worker_context, worker_page = await init_playwright_page(browser=browser, playwright=playwright)
+        worker_page.on("response", log_response)
         await handle_login(worker_page)
         try:
             for job in job_batch:
@@ -109,6 +112,26 @@ async def run_scrape(app):
         finally:
             await worker_page.close()
             await worker_context.close()
+
+
+    def log_response(response):
+        if response.status in INTERESTING_CODES:
+            print(f"\n--- POSSIBLE RATE LIMIT ---")
+            print(f"URL: {response.url}")
+            print(f"Status: {response.status}")
+            print("Headers:")
+            for k, v in response.headers.items():
+                print(f"    {k}: {v}")
+            print("---------------------------\n")
+
+    def attach_logger(page, tag="worker"):
+        def on_response(response):
+            url = response.url
+            status = response.status
+            elapsed = response.timing['responseEnd'] - response.timing['requestStart'] \
+                if hasattr(response, "timing") else None
+            print(f"[{tag}] {url} status={status} elapsed={elapsed}ms")
+        page.on("response", on_response)
 
     num_threads = app.worker_count.get()
     batch_size = ceil(len(raw_jobs) / num_threads)
