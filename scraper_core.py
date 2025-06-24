@@ -166,18 +166,18 @@ async def process_job_entries(page: Page, job: dict, log=print):
     try:
         t0 = time.perf_counter()
         await page.goto(customer_url)
-        print(f"[{cid}] Customer page took {time.perf_counter() - t0:.2f}s to load")
+        #print(f"[{cid}] Customer page took {time.perf_counter() - t0:.2f}s to load")
         if clear_first_time_overlays:
             t0 = time.perf_counter()
             await clear_first_time_overlays(page)
-            print(f"[{cid}] Clear overlay took {time.perf_counter() - t0:.2f}s")
+            #print(f"[{cid}] Clear overlay took {time.perf_counter() - t0:.2f}s")
 
         # Switch to MainView iframe
         try:
             t0 = time.perf_counter()
             await page.wait_for_selector('iframe[name="MainView"]', timeout=10_000)
             frame = page.frame(name="MainView")
-            print(f"[{cid}] Find and assign MainView took {time.perf_counter() - t0:.2f}s")
+            #print(f"[{cid}] Find and assign MainView took {time.perf_counter() - t0:.2f}s")
         except PlaywrightTimeout:
             frame = page.main_frame()
 
@@ -193,7 +193,7 @@ async def process_job_entries(page: Page, job: dict, log=print):
         try:
             t0 = time.perf_counter()
             workorder_url, wo_number = await asyncio.wait_for(_wait_for_work_order(), timeout=5)
-            print(f"[{cid}] WO URL Scrape took {time.perf_counter() - t0:.2f}s")
+            #print(f"[{cid}] WO URL Scrape took {time.perf_counter() - t0:.2f}s")
         except (NoWOError, NoOpenWOError) as e:
             job["error"] = str(e)
             log(f"[{cid}] No work order found: {e}")
@@ -207,17 +207,17 @@ async def process_job_entries(page: Page, job: dict, log=print):
 
         t0 = time.perf_counter()
         await page.goto(workorder_url)
-        print(f"[{cid}] WO took {time.perf_counter() - t0:.2f}s to load")
+        #print(f"[{cid}] WO took {time.perf_counter() - t0:.2f}s to load")
 
         t0 = time.perf_counter()
         job_type, address = (await get_job_type_and_address(page)) if get_job_type_and_address else (None, None)
-        print(f"[{cid}] job type took {time.perf_counter() - t0:.2f}s")
+        #print(f"[{cid}] job type took {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
         contractor_info = (await get_contractor_assignments(page)) if get_contractor_assignments else None
         print(f"[{cid}] Contractor extract took {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
-        job_date = (await extract_wo_date(page)) if extract_wo_date else None
-        print(f"[{cid}] Date extract took {time.perf_counter() - t0:.2f}s")
+        job_date = (await extract_wo_date(page))
+        #print(f"[{cid}] Date extract took {time.perf_counter() - t0:.2f}s")
 
         return {
             "company": contractor_info,

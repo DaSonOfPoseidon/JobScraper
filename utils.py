@@ -1,6 +1,10 @@
 # utils.py
 import os
 import re
+import sys
+import subprocess
+import traceback
+import asyncio
 from tkinter import Tk, messagebox, simpledialog
 import pandas as pd
 from datetime import datetime
@@ -8,7 +12,8 @@ from collections import defaultdict
 from dotenv import load_dotenv, set_key
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
-from playwright.async_api import TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
+from tkinter import messagebox, Tk
 
 
 HERE = os.path.abspath(os.path.dirname(__file__))
@@ -62,6 +67,55 @@ def check_env_or_prompt_login(log=print):
         log("✅ Credentials captured and saved to .env.")
         return username, password
 
+def install_chromium():
+    """
+    Sync: installs Chromium via Playwright CLI, works in script or frozen EXE.
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            from playwright.__main__ import main as pw_main
+            pw_main(["playwright", "install", "chromium"])
+        else:
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        msg = f"Failed to install Playwright Chromium: {e}\n\n{traceback.format_exc()}"
+        try:
+            root = Tk()
+            root.withdraw()
+            messagebox.showerror("Playwright Install Error", msg)
+            root.destroy()
+        except Exception:
+            print(msg)
+        raise
+
+def is_chromium_installed():
+    """
+    Try launching Chromium headless via sync API. Returns True if successful.
+    """
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            browser.close()
+        return True
+    except PlaywrightError:
+        return False
+    except Exception:
+        return False
+
+def ensure_playwright():
+    """
+    Sync check: if Chromium not installed, run install_chromium().
+    """
+    if not is_chromium_installed():
+        # Optionally: show a simple GUI prompt that install is starting
+        try:
+            root = Tk()
+            root.withdraw()
+            messagebox.showinfo("Playwright", "Chromium not found; downloading browser binaries now. This may take a few minutes.")
+            root.destroy()
+        except Exception:
+            print("Chromium not found; downloading browser binaries now...")
+        install_chromium()
 
 # Login + Session
 async def handle_login(page, log=print):
@@ -121,22 +175,21 @@ async def extract_cid_and_time(link, text):
 
 async def get_contractor_assignments(page):
     try:
-        # Wait for contractor section to show up
-        await page.wait_for_selector(".contractorsection", timeout=5000)
-        section_elem = await page.query_selector(".contractorsection")
-        if not section_elem:
-            return "Unknown"
-        section_text = (await section_elem.inner_text()).strip()
-        lines = section_text.splitlines()
-        for line in lines:
-            if " - (Primary" in line:
-                return line.split(" - ")[0].strip()
-        for line in lines:
-            if "assigned to this work order" not in line and "Contractors" not in line:
-                return line.split(" - ")[0].strip()
+        # Wait for the contractor section (parent) and ContractorList (child) to be visible
+        await page.wait_for_selector(".contractorsection #ContractorList", timeout=15_000, state="visible")
+        # Now, get all <b> elements inside the contractor list
+        contractor_b_tags = await page.locator(".contractorsection #ContractorList b").all_inner_texts()
+        for btext in contractor_b_tags:
+            if "None Assigned" in btext:
+                return "Unknown"
+            if " - (Primary" in btext:
+                return btext.split(" - ")[0].strip()
+            elif btext.strip() and "assigned to this work order" not in btext:
+                # fallback for any other contractor <b>
+                return btext.strip()
         return "Unknown"
     except Exception as e:
-        print(f"❌ Could not find contractor name: {e}")
+        print(f"❌ Could not extract contractor: {e}")
         return "Unknown"
 
 async def get_work_order_url(frame, log=print):
@@ -276,19 +329,54 @@ async def get_job_type_and_address(page):
 
     return job_type, address
 
-async def extract_wo_date(page):
+async def extract_wo_date(page, fallback_date=None):
     try:
         # Wait for the scheduled event section to load
         await page.wait_for_selector("#scheduledEventList", timeout=10_000)
-        text = (await page.locator("#scheduledEventList").inner_text()).strip()
-        # Find line with "Fiber Install"
-        fiber_line = next((line for line in text.splitlines() if "Fiber Install" in line), "")
-        match = re.search(r"(\d{4}-\d{2}-\d{2})", fiber_line)
-        if match:
-            parsed_date = datetime.strptime(match.group(1), "%Y-%m-%d")
-            # Windows: %#m, Linux/mac: %-m
+
+        # Now poll until the date string appears or timeout reached
+        deadline = asyncio.get_event_loop().time() + 8  # up to 8 extra seconds
+        date_pattern = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+        while True:
+            text = (await page.locator("#scheduledEventList").inner_text()).strip()
+            if date_pattern.search(text):
+                break
+            # Also break if the content is NOT a spinner/loader, e.g., contains "Fiber Install"
+            if "Fiber" in text and "Install" in text:
+                break
+            if asyncio.get_event_loop().time() > deadline:
+                break
+            await asyncio.sleep(0.25)
+
+        # Continue as before
+        text = re.sub(r"<.*?>", "", text)
+        lines = text.splitlines()
+        fiber_line = next(
+            (line for line in lines if re.search(r"fiber.*install", line, re.I)), ""
+        )
+        date_match = re.search(r"(\d{4})-(\d{2})-(\d{2})", fiber_line)
+        if date_match:
+            parsed_date = datetime.strptime(date_match.group(0), "%Y-%m-%d")
             fmt = "%#m-%#d-%y" if os.name == "nt" else "%-m-%-d-%y"
             return parsed_date.strftime(fmt)
+
+        # Fallbacks (as above)
+        alt_match = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", fiber_line)
+        if alt_match:
+            try:
+                mm, dd, yy = map(int, alt_match.groups())
+                if yy < 100:  # Two-digit year
+                    yy += 2000
+                parsed_date = datetime(yy, mm, dd)
+                fmt = "%#m-%#d-%y" if os.name == "nt" else "%-m-%-d-%y"
+                return parsed_date.strftime(fmt)
+            except Exception:
+                pass
+
+        if fallback_date:
+            return fallback_date
+
     except Exception as e:
         print(f"⚠️ Could not extract WO date: {e}")
     return "Unknown"

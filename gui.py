@@ -12,7 +12,7 @@ from utils import parse_imported_jobs, assign_contractor
 from spreader import parse_moved_jobs_from_spread
 from scrape_runner import run_scrape
 from scraper_core import init_playwright_page
-from utils import handle_login
+from utils import handle_login, ensure_playwright
 
 class CalendarBuddyGUI:
     def __init__(self, root):
@@ -131,8 +131,23 @@ class CalendarBuddyGUI:
         self.throughput_label.config(text=txt)
 
     def start_scrape_thread(self):
+        def target():
+            try:
+                ensure_playwright()
+                # Now Chromium is installed (or an exception was raised)
+            except Exception as e:
+                # If install failed, abort scraping
+                print(f"Playwright setup failed: {e}")
+                return
+
+            # Proceed with async scraping
+            try:
+                asyncio.run(run_scrape(self))
+            except Exception as e:
+                print(f"Error in run_scrape: {e}")
+
         self.reset_throughput()
-        threading.Thread(target=lambda: asyncio.run(run_scrape(self)), daemon=True).start()
+        threading.Thread(target=target, daemon=True).start()
     
     def show_approve_spread_popup(self, spread_file):
         popup = tk.Toplevel(self.root)
