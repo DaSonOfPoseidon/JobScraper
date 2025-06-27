@@ -29,6 +29,7 @@ if __name__ == "__main__":
         if args.update:
             check_for_update()
             sys.exit(0)
+            
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS
         print(f"PLAYWRIGHT_BROWSERS_PATH set to {BROWSERS}")
         ensure_playwright()

@@ -15,8 +15,6 @@ from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 from tkinter import messagebox, Tk
-from pyupdater.client import Client
-from client_config import ClientConfig
 
 __version__ = "0.1.0"
 
@@ -205,17 +203,7 @@ def ensure_playwright(log=print):
         raise
 
 def check_for_update():
-    client = Client(ClientConfig(), refresh=True)
-    latest = client.update_check(ClientConfig.APP_NAME, __version__)
-    if not latest:
-        print("✓ No update available.")
-        return
-    print(f"⬆️  Update found! {latest.version} → downloading…")
-    if client.download(latest):
-        print("✅ Download complete, restarting into new version…")
-        client.extract_restart()  # replaces EXE and relaunches
-    else:
-        print("❌ Download failed.")
+    return
 
 # Login + Session
 async def handle_login(page, log=print):
