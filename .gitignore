@@ -11,9 +11,19 @@ deploy/
 # (if you don’t want to check in your signing keys, add:)
 pyu-data/keys/
 
+state.json
+build/
+dist/
+.pyupdater/private_keys/*
+pyu-data/
+
 # Editor / OS cruft
 .vscode/
 *.log
 .DS_Store
 .json
 .html
+
+# PyUpdater configuration files
+keypack.pyu
+

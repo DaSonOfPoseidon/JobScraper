@@ -133,8 +133,8 @@ async def run_scrape(app):
             print(f"[{tag}] {url} status={status} elapsed={elapsed}ms")
         page.on("response", on_response)
 
-    num_threads = app.worker_count.get()
-    batch_size = ceil(len(raw_jobs) / num_threads)
+    num_threads = max(1, app.worker_count.get())
+    batch_size = max(1, ceil(len(raw_jobs) / num_threads))
     batches = [raw_jobs[i:i + batch_size] for i in range(0, len(raw_jobs), batch_size)]
 
     app.log("Processing Jobs...")

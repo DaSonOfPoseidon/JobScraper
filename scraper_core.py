@@ -1,6 +1,8 @@
 # scraper_core.py
 import traceback
+import os
 import time
+import logging
 from datetime import datetime
 from datetime import timedelta
 from dateutil import parser as dateparser
@@ -9,47 +11,81 @@ from playwright.async_api import async_playwright, Page, TimeoutError as Playwri
 
 from utils import (
     clear_first_time_overlays, NoWOError, NoOpenWOError,
-    get_work_order_url, get_job_type_and_address,
+    get_work_order_url, get_job_type_and_address, PROJECT_ROOT,
     get_contractor_assignments, extract_wo_date, extract_cid_and_time
 )
 
 CALENDAR_URL = "http://inside.sockettelecom.com/events/calendar.php"
 CUSTOMER_URL_TEMPLATE = "http://inside.sockettelecom.com/menu.php?coid=1&tabid=7&parentid=9&customerid={}"
 
+logger = logging.getLogger(__name__)
+
 async def init_playwright_page(headless: bool = True, browser=None, playwright=None):
-    # If browser is not passed, start everything fresh
+    """
+    Initialize Playwright browser/context/page.
+    If browser and playwright are provided, re-use them and return (context, page).
+    Otherwise, start a new Playwright instance and return (playwright, browser, context, page).
+    Falls back cleanly if storage_state file is missing or corrupted.
+    """
+
+    # Start Playwright/browser if not passed in
     if browser is None or playwright is None:
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=headless,
-            args=[
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-usb-keyboard-detect",
-                "--disable-hid-detection",
-                "--log-level=3",
-                "--blink-settings=imagesEnabled=false",
-                "--headless=new"
-            ],
-        )
-        owns_browser = True  # So caller can close these later
+        launch_args = [
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-usb-keyboard-detect",
+            "--disable-hid-detection",
+            "--log-level=3",
+            "--blink-settings=imagesEnabled=false",
+            "--headless=new" if headless else "--headless=chrome"
+        ]
+        browser = await playwright.chromium.launch(headless=headless, args=launch_args)
+        owns_browser = True
     else:
         owns_browser = False
 
-    context = await browser.new_context(
-        java_script_enabled=True,
-        bypass_csp=True,
-        viewport={"width": 1920, "height": 1080},
-        storage_state="state.json"
-    )
+    # Prepare new_context kwargs
+    state_path = os.path.join(PROJECT_ROOT, "state.json")
+    context_kwargs = {
+        "java_script_enabled": True,
+        "bypass_csp": True,
+        "viewport": {"width": 1920, "height": 1080},
+    }
+    if os.path.exists(state_path):
+        context_kwargs["storage_state"] = state_path
+
+    # Create context, with fallback if storage_state is invalid
+    try:
+        context = await browser.new_context(**context_kwargs)
+    except Exception as e:
+        logger.warning(f"Failed to load storage_state from {state_path}: {e}")
+        # Remove corrupted file if present
+        if os.path.exists(state_path):
+            try:
+                os.remove(state_path)
+                logger.info(f"Removed corrupted state file: {state_path}")
+            except Exception as rm_e:
+                logger.warning(f"Could not remove corrupted state file {state_path}: {rm_e}")
+        # Retry without storage_state
+        context_kwargs.pop("storage_state", None)
+        context = await browser.new_context(**context_kwargs)
+
+    # Block images (optional, since blink-settings may already disable them)
     async def block_resources(route):
-        if route.request.resource_type in ["image"]:
+        if route.request.resource_type == "image":
             await route.abort()
         else:
             await route.continue_()
-    await context.route("**/*", block_resources)
+
+    try:
+        await context.route("**/*", block_resources)
+    except Exception as e:
+        logger.debug(f"Could not set route for blocking resources: {e}")
+
     page = await context.new_page()
 
+    # Return signature based on ownership
     if owns_browser:
         return playwright, browser, context, page
     else:
@@ -214,7 +250,7 @@ async def process_job_entries(page: Page, job: dict, log=print):
         #print(f"[{cid}] job type took {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
         contractor_info = (await get_contractor_assignments(page)) if get_contractor_assignments else None
-        print(f"[{cid}] Contractor extract took {time.perf_counter() - t0:.2f}s")
+        #print(f"[{cid}] Contractor extract took {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
         job_date = (await extract_wo_date(page))
         #print(f"[{cid}] Date extract took {time.perf_counter() - t0:.2f}s")

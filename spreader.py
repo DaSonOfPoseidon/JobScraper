@@ -1,9 +1,12 @@
 import re
+import sys
 from collections import defaultdict, deque
 import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
 import os
+
+__version__ = "0.1.0"
 
 # ----------- CONFIGURABLE RULES -----------
 CONTRACTORS = [
@@ -18,7 +21,6 @@ CONTRACTORS = [
     "North Sky",
     "Unassigned"
 ]
-
 
 LIMITS = {
         "Tex-Star Communications": 7,
@@ -122,7 +124,7 @@ TEXSTAR_LIMIT = 7
 PIFER_LIMIT = 3
 ALLCLEAR_LIMIT = 1
 ADVANCED_LIMIT = 0
-NORTHSKY_LIMIT = 3
+NORTHSKY_LIMIT = 2
 SUBT_LIMIT = 9
 TGS_LIMIT = 8
 MAVERICK_LIMIT = 2
@@ -147,9 +149,6 @@ def parse_city(address):
         if re.search(rf"\b{re.escape(city_clean)}\b", address_lower.replace("'", "")):
             return city
     return ""
-
-def get_city_group(city):
-    return CITY_MAP.get(city.lower(), 'uncategorized')
 
 def extract_timeslot(job_line):
     m = re.match(r'^(\d{1,2}:\d{2})', job_line)
@@ -434,4 +433,7 @@ def start_gui():
     root.mainloop()
 
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(__version__)
+        sys.exit(0)
     start_gui()

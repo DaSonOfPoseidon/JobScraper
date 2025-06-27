@@ -1,5 +1,5 @@
 class ClientConfig(object):
-    PUBLIC_KEY = 'None'
+    PUBLIC_KEY = 'KU20Ac+N8JEWcUhR667AbODhJjJuf0RoAmLA+QPFPmI'
     APP_NAME = 'JobScraper'
     COMPANY_NAME = 'Jackson K'
     HTTP_TIMEOUT = 30
