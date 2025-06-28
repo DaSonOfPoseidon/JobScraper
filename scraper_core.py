@@ -157,7 +157,7 @@ async def scrape_jobs(page: Page, mode="week", imported_jobs=None, selected_day=
     # Step 3: Wait for jobs to load
     try:
         await page.wait_for_selector(
-            'a.fc-time-grid-event:has-text("Residential Fiber Install")', timeout=10_000
+            'a.fc-time-grid-event:has-text("Residential Fiber Install")', timeout=30_000
         )
         log("✅ Jobs loaded and ready to scrape.")
     except PlaywrightTimeout:
@@ -228,7 +228,7 @@ async def process_job_entries(page: Page, job: dict, log=print):
 
         try:
             t0 = time.perf_counter()
-            workorder_url, wo_number = await asyncio.wait_for(_wait_for_work_order(), timeout=5)
+            workorder_url, wo_number = await asyncio.wait_for(_wait_for_work_order(), timeout=10)
             #print(f"[{cid}] WO URL Scrape took {time.perf_counter() - t0:.2f}s")
         except (NoWOError, NoOpenWOError) as e:
             job["error"] = str(e)
