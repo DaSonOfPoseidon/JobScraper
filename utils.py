@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 from tkinter import messagebox, Tk
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     if getattr(sys, "frozen", False):

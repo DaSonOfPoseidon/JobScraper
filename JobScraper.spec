@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('client_config.py', '.')],
+    datas=[],
     hiddenimports=['playwright.__main__'],
     hookspath=[],
     hooksconfig={},
