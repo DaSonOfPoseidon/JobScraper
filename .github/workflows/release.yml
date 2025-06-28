@@ -141,5 +141,5 @@ jobs:
             {
               "exe_name": "ButterKnife.exe",
               "version": "${{ env.VERSION_SPREADER }}",
-              "release_repo": "TaskScraper"
+              "release_repo": "JobScraper"
             }
