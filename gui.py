@@ -12,12 +12,12 @@ from utils import parse_imported_jobs, assign_contractor
 from spreader import parse_moved_jobs_from_spread
 from scrape_runner import run_scrape
 from scraper_core import init_playwright_page
-from utils import handle_login, ensure_playwright
+from utils import handle_login, ensure_playwright, __version__
 
 class CalendarBuddyGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Calendar Buddy - Job Scraper")
+        self.root.title(f"Job Scraper v{__version__}")
         self.root.geometry("720x600")
         self.start_time = None
         self.jobs_done  = 0

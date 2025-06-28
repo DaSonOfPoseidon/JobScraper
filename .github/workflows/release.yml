@@ -1,4 +1,4 @@
-name: Build and Release EXE
+name: Build and Release EXEs
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed for release creation and asset upload
+  contents: write
   actions: write
 
 env:
@@ -28,25 +28,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - id: extract_version
+      - id: extract_version_job_scraper
         shell: pwsh
         run: |
           $text = Get-Content -Raw -Encoding UTF8 utils.py
           if ($text -match '(?m)^\s*__version__\s*=\s*["'']([^"'']+)["'']') {
-            Write-Output "VERSION=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Output "VERSION_JOB_SCRAPER=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
             throw "Version not found in utils.py"
           }
 
-      - name: Build executable
+      - id: extract_version_spreader
+        shell: pwsh
+        run: |
+          $text = Get-Content -Raw -Encoding UTF8 spreader.py
+          if ($text -match '(?m)^\s*__version__\s*=\s*["'']([^"'']+)["'']') {
+            Write-Output "VERSION_SPREADER=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            throw "Version not found in spreader.py"
+          }
+
+      - name: Build JobScraper executable
         run: pyinstaller JobScraper.spec
 
-      - name: Create and push tag
+      - name: Build ButterKnife executable
+        run: pyinstaller ButterKnife.spec
+
+      # Tag and release for JobScraper
+      - name: Create and push tag for JobScraper
         shell: bash
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          TAG="v${{ env.VERSION }}"
+          TAG="v${{ env.VERSION_JOB_SCRAPER }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists, skipping push"
           else
@@ -54,25 +68,25 @@ jobs:
             git push origin "$TAG"
           fi
 
-      - name: Create or update GitHub Release
-        id: create_release
+      - name: Create or update GitHub Release for JobScraper
+        id: create_release_job_scraper
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ env.VERSION }}
-          name: Release v${{ env.VERSION }}
-          body: Automated release of JobScraper.exe version v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION_JOB_SCRAPER }}
+          name: Release v${{ env.VERSION_JOB_SCRAPER }}
+          body: Automated release of JobScraper.exe version v${{ env.VERSION_JOB_SCRAPER }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload EXE to release
+      - name: Upload JobScraper EXE to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ env.VERSION }}   # add this line to specify which release
+          tag_name: v${{ env.VERSION_JOB_SCRAPER }}
           files: dist/JobScraper.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trigger exeFiles update
+      - name: Trigger exeFiles update for JobScraper
         uses: peter-evans/repository-dispatch@v2
         with:
           token: ${{ secrets.PAT }}
@@ -81,6 +95,51 @@ jobs:
           client-payload: |
             {
               "exe_name": "JobScraper.exe",
-              "version": "${{ env.VERSION }}",
+              "version": "${{ env.VERSION_JOB_SCRAPER }}",
               "release_repo": "JobScraper"
+            }
+
+      # Tag and release for ButterKnife
+      - name: Create and push tag for ButterKnife
+        shell: bash
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          TAG="v${{ env.VERSION_SPREADER }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping push"
+          else
+            git tag -a "$TAG" -m "Release version $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Create or update GitHub Release for ButterKnife
+        id: create_release_spreader
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION_SPREADER }}
+          name: Release v${{ env.VERSION_SPREADER }}
+          body: Automated release of ButterKnife.exe version v${{ env.VERSION_SPREADER }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload ButterKnife EXE to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION_SPREADER }}
+          files: dist/ButterKnife.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger exeFiles update for ButterKnife
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.PAT }}
+          repository: ${{ env.EXE_REPO }}
+          event-type: exe_update
+          client-payload: |
+            {
+              "exe_name": "ButterKnife.exe",
+              "version": "${{ env.VERSION_SPREADER }}",
+              "release_repo": "TaskScraper"
             }

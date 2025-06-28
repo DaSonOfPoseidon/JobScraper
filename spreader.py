@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
 import os
+import json
 
 __version__ = "0.1.0"
 
@@ -33,6 +34,19 @@ LIMITS = {
         "Advanced Electric": 0,  # Never gets assigned
         "Unassigned": float("inf"),
         "Socket": float("inf"),
+}
+
+DEFAULT_LIMITS = {
+    "Tex-Star Communications": 7,
+    "North Sky": 3,
+    "Maverick": 2,
+    "Subterraneus Installs": 9,
+    "TGS Fiber": 8,
+    "Pifer Quality Communications": 3,
+    "All Clear": 1,
+    "Advanced Electric": 0,
+    "Unassigned": 9999,  # use 9999 instead of infinity for JSON
+    "Socket": 9999,
 }
 
     # Helper: Area to assignment order map
@@ -108,6 +122,7 @@ CITY_AREA = {
 }
 
 CITY_LIST = list(CITY_AREA.keys())
+LIMITS_FILE = "contractor_limits.json"
 
 AREA_COVERAGE = {
     "greater_boone": {"Tex-Star Communications", "North Sky", "Maverick", "Subterraneus Installs", "TGS Fiber"},
@@ -389,6 +404,7 @@ def write_output(sections, move_comments, filename="output.txt"):
 
 def run_process(file_path):
     try:
+        LIMITS = load_limits()
         sections = parse_input(file_path)
         final_sections, move_comments, jobs = reassign_jobs(sections)
         base, ext = os.path.splitext(file_path)
@@ -399,6 +415,96 @@ def run_process(file_path):
         return out_file
     except Exception as e:
         return str(e)
+
+def ensure_limits_file_exists(filename=LIMITS_FILE):
+    if not os.path.exists(filename):
+        with open(filename, "w") as f:
+            json.dump(DEFAULT_LIMITS, f, indent=2)
+        print(f"[INFO] Created default limits file at {filename}")
+
+def load_limits(filename=LIMITS_FILE):
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+            for k in ["Unassigned", "Socket"]:
+                if k in data and data[k] == 9999:
+                    data[k] = float("inf")
+            return data
+    except Exception as e:
+        print(f"Warning: Could not load limits from {filename}, using defaults. {e}")
+        return {
+            "Tex-Star Communications": 7,
+            "North Sky": 3,
+            "Maverick": 2,
+            "Subterraneus Installs": 9,
+            "TGS Fiber": 8,
+            "Pifer Quality Communications": 3,
+            "All Clear": 1,
+            "Advanced Electric": 0,
+            "Unassigned": float("inf"),
+            "Socket": float("inf"),
+        }
+
+def save_limits(limits, filename=LIMITS_FILE):
+    # Convert float('inf') back to 9999 or a large int before saving
+    to_save = {}
+    for k, v in limits.items():
+        if v == float('inf'):
+            to_save[k] = 9999
+        else:
+            to_save[k] = v
+    with open(filename, "w") as f:
+        json.dump(to_save, f, indent=2)
+
+def open_settings_gui(root):
+    limits = load_limits()
+
+    settings_win = tk.Toplevel(root)
+    settings_win.title("Contractor Limits Settings")
+
+    entries = {}
+
+    tk.Label(settings_win, text="Contractor", font=("Segoe UI", 11, "bold"), width=30).grid(row=0, column=0, padx=10, pady=5)
+    tk.Label(settings_win, text="Limit", font=("Segoe UI", 11, "bold"), width=10).grid(row=0, column=1, padx=10, pady=5)
+
+    for i, contractor in enumerate(CONTRACTORS, start=1):
+        tk.Label(settings_win, text=contractor, width=30, anchor="w").grid(row=i, column=0, padx=10, pady=2)
+        limit_val = limits.get(contractor, 0)
+        if limit_val == float('inf'):
+            limit_val = 9999  # show as large number
+
+        entry = tk.Entry(settings_win, width=10)
+        entry.insert(0, str(limit_val))
+        entry.grid(row=i, column=1, padx=10, pady=2)
+        entries[contractor] = entry
+
+    def save_and_close():
+        new_limits = {}
+        try:
+            for c, e in entries.items():
+                val = int(e.get())
+                if val < 0:
+                    raise ValueError("Limit cannot be negative")
+                new_limits[c] = float('inf') if val == 9999 else val
+        except ValueError as ve:
+            tk.messagebox.showerror("Invalid input", f"Please enter valid non-negative integers.\n{ve}")
+            return
+
+        save_limits(new_limits)
+        global LIMITS
+        LIMITS = new_limits
+        tk.messagebox.showinfo("Saved", "Contractor limits updated successfully.")
+        settings_win.destroy()
+
+    btn_save = tk.Button(settings_win, text="Save", command=save_and_close)
+    btn_save.grid(row=len(CONTRACTORS)+1, column=0, pady=10)
+
+    btn_cancel = tk.Button(settings_win, text="Cancel", command=settings_win.destroy)
+    btn_cancel.grid(row=len(CONTRACTORS)+1, column=1, pady=10)
+
+    settings_win.transient(root)
+    settings_win.grab_set()
+    root.wait_window(settings_win)
 
 def start_gui():
     def on_drop(event):
@@ -423,6 +529,9 @@ def start_gui():
     label = tk.Label(root, text="\nDrop your jobs .txt file here", font=("Segoe UI", 15), pady=16)
     label.pack(expand=True)
 
+    btn_settings = tk.Button(root, text="Edit Contractor Limits", command=lambda: open_settings_gui(root))
+    btn_settings.pack(pady=(0, 10))
+
     status = tk.StringVar(value="Waiting for file...")
     status_label = tk.Label(root, textvariable=status, fg="blue", font=("Segoe UI", 11))
     status_label.pack(pady=(0, 16))
@@ -436,4 +545,7 @@ if __name__ == "__main__":
     if "--version" in sys.argv:
         print(__version__)
         sys.exit(0)
+
+    LIMITS = load_limits()        
+    ensure_limits_file_exists()
     start_gui()
