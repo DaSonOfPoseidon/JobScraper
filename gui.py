@@ -9,10 +9,9 @@ from tkcalendar import DateEntry
 from datetime import datetime
 from tkinter import messagebox
 from utils import parse_imported_jobs, assign_contractor
-from spreader import parse_moved_jobs_from_spread
 from scrape_runner import run_scrape
 from scraper_core import init_playwright_page
-from utils import handle_login, ensure_playwright, __version__
+from utils import handle_login, ensure_playwright, __version__, prompt_reassignment
 
 class CalendarBuddyGUI:
     def __init__(self, root):
@@ -148,57 +147,11 @@ class CalendarBuddyGUI:
 
         self.reset_throughput()
         threading.Thread(target=target, daemon=True).start()
-    
+
     def show_approve_spread_popup(self, spread_file):
-        popup = tk.Toplevel(self.root)
-        popup.title("Apply Spread Changes?")
-        tk.Label(popup, text="Apply contractor reassignments now?").pack(padx=20, pady=10)
-
-        def do_reassign():
-            popup.destroy()
-            self.start_apply_spread_changes(spread_file, self.log)
-
-        def do_cancel():
-            popup.destroy()
-
-        btn_frame = tk.Frame(popup)
-        btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="Reassign", command=do_reassign, width=12).pack(side="left", padx=10)
-        tk.Button(btn_frame, text="Not Now", command=do_cancel, width=12).pack(side="right", padx=10)
-        popup.grab_set()
-        popup.transient(self.root)
-        popup.wait_window()
+        # Call shared reusable prompt with the root and GUI logger
+        prompt_reassignment(self.root, spread_file, log_func=self.log)
     
-    def start_apply_spread_changes(self, spread_file):
-        threading.Thread(
-            target=lambda: asyncio.run(self.apply_spread_changes(spread_file)), daemon=True
-        ).start()
-    
-    async def apply_spread_changes(self, spread_file):
-        jobs = parse_moved_jobs_from_spread(spread_file)
-        if not jobs:
-            self.log("No moved jobs to reassign.")
-            return
-        playwright, browser, context, page = await init_playwright_page(headless=True)
-        try:
-            await handle_login(page, log=self.log)
-            for job in jobs:
-                wo_number = job["wo"]
-                desired_contractor = job["contractor"]
-                try:
-                    url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
-                    await page.goto(url)
-                    await asyncio.sleep(2)
-                    await assign_contractor(page, wo_number, desired_contractor)
-                except Exception as e:
-                    self.log(f"Failed to process WO {wo_number}: {e}")
-            self.log("Done applying spread changes.")
-        finally:
-            await page.close()
-            await context.close()
-            await browser.close()
-            await playwright.stop()
-
 if __name__ == "__main__":
     root = tk.Tk()
     app = CalendarBuddyGUI(root)

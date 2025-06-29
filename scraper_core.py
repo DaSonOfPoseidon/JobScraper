@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright, Page, TimeoutError as Playwri
 
 from utils import (
     clear_first_time_overlays, NoWOError, NoOpenWOError,
-    get_work_order_url, get_job_type_and_address, PROJECT_ROOT,
+    get_work_order_url, get_job_type_and_address, MISC_DIR,
     get_contractor_assignments, extract_wo_date, extract_cid_and_time
 )
 
@@ -46,7 +46,7 @@ async def init_playwright_page(headless: bool = True, browser=None, playwright=N
         owns_browser = False
 
     # Prepare new_context kwargs
-    state_path = os.path.join(PROJECT_ROOT, "state.json")
+    state_path = os.path.join(MISC_DIR, "state.json")
     context_kwargs = {
         "java_script_enabled": True,
         "bypass_csp": True,

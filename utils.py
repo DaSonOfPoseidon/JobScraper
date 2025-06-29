@@ -14,9 +14,10 @@ from dotenv import load_dotenv, set_key
 from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
-from tkinter import messagebox, Tk
+import tkinter as tk
+import threading
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     if getattr(sys, "frozen", False):
@@ -38,10 +39,10 @@ def get_project_root() -> str: #Returns the root directory of the project as a s
 # Then:
 PROJECT_ROOT = get_project_root()
 OUTPUT_DIR  = os.path.join(PROJECT_ROOT, "Outputs")
-ENV_PATH    = os.path.join(PROJECT_ROOT, ".env")
+MISC_DIR = os.path.join(PROJECT_ROOT, "Misc")
+ENV_PATH    = os.path.join(MISC_DIR, ".env")
 BROWSERS    = os.path.join(PROJECT_ROOT, "browsers")
 LOG_FOLDER  = os.path.join(PROJECT_ROOT, "logs")
-LOG_FILE    = os.path.join(LOG_FOLDER, "playwright_install.log")
 
 UPDATE_MODE = None
 
@@ -49,6 +50,7 @@ UPDATE_MODE = None
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_FOLDER, exist_ok=True)
 os.makedirs(BROWSERS, exist_ok=True)
+os.makedirs(MISC_DIR, exist_ok=True)
 
 # === CONFIGURATION ===
 load_dotenv(dotenv_path=ENV_PATH)
@@ -534,6 +536,78 @@ async def assign_contractor(page, wo_number, desired_contractor_full, log=print)
 
     except Exception as e:
         log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+
+def prompt_reassignment(root, spread_file, log_func=print):
+    """
+    Pops up a modal dialog asking to apply contractor reassignments.
+    If user agrees, runs the reassignment asynchronously on a background thread.
+    """
+    def start_reassignment():
+        popup.destroy()
+        threading.Thread(target=lambda: asyncio.run(apply_spread_changes(spread_file, log_func)), daemon=True).start()
+
+    def cancel():
+        popup.destroy()
+
+    popup = tk.Toplevel(root)
+    popup.title("Apply Spread Changes?")
+    tk.Label(popup, text="Apply contractor reassignments now?").pack(padx=20, pady=10)
+
+    btn_frame = tk.Frame(popup)
+    btn_frame.pack(pady=10)
+    tk.Button(btn_frame, text="Reassign", command=start_reassignment, width=12).pack(side="left", padx=10)
+    tk.Button(btn_frame, text="Not Now", command=cancel, width=12).pack(side="right", padx=10)
+
+    popup.grab_set()
+    popup.transient(root)
+    popup.wait_window()
+
+def parse_moved_jobs_from_spread(spread_file):
+    moved_jobs = []
+    with open(spread_file, encoding="utf-8") as f:
+        current_contractor = None
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line in CONTRACTORS:
+                current_contractor = line
+                continue
+            # Match job line with WO and "# MOVED"
+            m = re.match(r".*WO (\d+).*(# MOVED.*)", line, re.IGNORECASE)
+            if m and current_contractor:
+                moved_jobs.append({
+                    "contractor": current_contractor,
+                    "wo": m.group(1),
+                    "line": line
+                })
+    return moved_jobs
+
+async def apply_spread_changes(spread_file, log_func=print):
+    from scrape_runner import init_playwright_page
+    jobs = parse_moved_jobs_from_spread(spread_file)
+    if not jobs:
+        log_func("No moved jobs to reassign.")
+        return
+    playwright, browser, context, page = await init_playwright_page(headless=True)
+    try:
+        await handle_login(page, log=log_func)
+        for job in jobs:
+            wo_number = job["wo"]
+            desired_contractor = job["contractor"]
+            try:
+                url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
+                await page.goto(url)
+                await asyncio.sleep(2)  # let page settle
+                await assign_contractor(page, wo_number, desired_contractor, log=log_func)
+            except Exception as e:
+                log_func(f"Failed to process WO {wo_number}: {e}")
+        log_func("Done applying spread changes.")
+    finally:
+        await page.close()
+        await context.close()
+        await browser.close()
+        await playwright.stop()
 
 # Time + Data
 def get_output_tag(start, end): #File date stamp

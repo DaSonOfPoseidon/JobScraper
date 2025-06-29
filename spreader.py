@@ -6,8 +6,9 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
 import os
 import json
+from utils import prompt_reassignment, MISC_DIR
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # ----------- CONFIGURABLE RULES -----------
 CONTRACTORS = [
@@ -122,7 +123,7 @@ CITY_AREA = {
 }
 
 CITY_LIST = list(CITY_AREA.keys())
-LIMITS_FILE = "contractor_limits.json"
+LIMITS_FILE = os.path.join(MISC_DIR, "contractor_limits.json")
 
 AREA_COVERAGE = {
     "greater_boone": {"Tex-Star Communications", "North Sky", "Maverick", "Subterraneus Installs", "TGS Fiber"},
@@ -521,6 +522,7 @@ def start_gui():
         else:
             status.set("Error!")
             messagebox.showerror("Error", f"Processing failed:\n{out_file}")
+        prompt_reassignment(root, file_path)
 
     root = TkinterDnD.Tk()
     root.title("Job Assignment Reorganizer")

@@ -233,8 +233,7 @@ async def run_scrape(app):
                 rel_path = os.path.relpath(spread_file, PROJECT_ROOT)
                 app.log(f"(Experimental) Recommended spread saved to {rel_path}")
                 if getattr(app, "show_approve_spread_popup", None):
-                    if app.run_spreader.get() and os.path.exists(spread_file):
-                        app.show_approve_spread_popup(spread_file)
+                    app.show_approve_spread_popup(spread_file)  # simplified check since already checked above
             else:
                 app.log(f"(Experimental) Spreader failed: {spread_file}")
         except Exception as e:
