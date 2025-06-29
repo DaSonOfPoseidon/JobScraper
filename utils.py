@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright, Error as PlaywrightError
 import tkinter as tk
 import threading
 
-__version__ = "0.1.6"
+__version__ = "0.2.0"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     if getattr(sys, "frozen", False):

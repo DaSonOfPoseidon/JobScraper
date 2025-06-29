@@ -6,9 +6,7 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
 import os
 import json
-from utils import prompt_reassignment, MISC_DIR
-
-__version__ = "0.1.2"
+from utils import prompt_reassignment, MISC_DIR, __version__
 
 # ----------- CONFIGURABLE RULES -----------
 CONTRACTORS = [
