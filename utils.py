@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright, Error as PlaywrightError
 import tkinter as tk
 import threading
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     if getattr(sys, "frozen", False):
@@ -53,7 +53,7 @@ os.makedirs(BROWSERS, exist_ok=True)
 os.makedirs(MISC_DIR, exist_ok=True)
 
 # === CONFIGURATION ===
-load_dotenv(dotenv_path=ENV_PATH)
+load_dotenv(ENV_PATH)
 
 BASE_URL = "http://inside.sockettelecom.com/"
 
@@ -225,7 +225,7 @@ async def handle_login(page, log=print):
     await page.wait_for_selector("iframe#MainView", timeout=10_000)
     await clear_first_time_overlays(page)
     # Save state for next run
-    await page.context.storage_state(path=os.path.join(PROJECT_ROOT, "state.json"))
+    await page.context.storage_state(path=os.path.join(MISC_DIR, "state.json"))
     log("✅ Logged in via credentials.")
 
 # Browser Interaction
@@ -279,7 +279,7 @@ async def get_contractor_assignments(page):
         contractor_b_tags = await page.locator(".contractorsection #ContractorList b").all_inner_texts()
         for btext in contractor_b_tags:
             if "None Assigned" in btext:
-                return "Unknown"
+                return "None Assigned"
             if " - (Primary" in btext:
                 return btext.split(" - ")[0].strip()
             elif btext.strip() and "assigned to this work order" not in btext:
@@ -479,63 +479,72 @@ async def extract_wo_date(page, fallback_date=None):
         print(f"⚠️ Could not extract WO date: {e}")
     return "Unknown"
 
-async def assign_contractor(page, wo_number, desired_contractor_full, log=print):  # COMPANY ASSIGNMENT
+async def assign_contractor(page, wo_number, desired_contractor_full, log=print):
     try:
-        # 🧠 Trigger the assignment UI via JavaScript
-        await page.evaluate(f"assignContractor('{wo_number}');")
-        await page.wait_for_selector("#ContractorID", timeout=10_000)
-        await page.wait_for_timeout(500)  # let modal settle
-
-        # ✅ Get current contractor assignment from the page
-        contractor_texts = [
-            text.strip()
-            for text in await page.locator("b").all_inner_texts()
-        ]
-        current_contractor = None
-        for text in contractor_texts:
-            if " - (Primary" in text:
-                current_contractor = text.split(" - ")[0].strip()
-                break
-
-        if current_contractor == desired_contractor_full:
-            log(f"✅ Contractor '{current_contractor}' already assigned to WO #{wo_number}")
-            return
-
-        log(f"🧹 Reassigning from '{current_contractor}' → '{desired_contractor_full}'")
-
-        # 🧽 Remove currently assigned contractors
-        remove_links = page.locator("a", has_text="Remove")
-        count = await remove_links.count()
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_selector("#ContractorList", state="visible", timeout=10000)
+        assigned_contractors = []
+        contractor_rows = page.locator("#ContractorList table tbody tr")
+        count = await contractor_rows.count()
         for i in range(count):
-            try:
-                link = remove_links.nth(i)
-                await link.scroll_into_view_if_needed()
-                await link.click()
-                await page.wait_for_timeout(500)
-            except Exception as e:
-                log(f"❌ Could not remove contractor: {e}")
+            row = contractor_rows.nth(i)
+            contractor_name = await row.locator("td b").inner_text()
+            assigned_contractors.append(contractor_name.strip())
 
-        # 🏷️ Assign the new contractor
-        contractor_dropdown = page.locator("#ContractorID")
-        await contractor_dropdown.select_option(label=desired_contractor_full)
-        role_dropdown = page.locator("#ContractorType")
-        await role_dropdown.select_option(label="Primary")
+        # Exact match (case insensitive)
+        if any(c.lower() == desired_contractor_full.lower() for c in assigned_contractors):
+            log(f"✅ Contractor '{desired_contractor_full}' already assigned to WO #{wo_number}")
+        else:
+            assign_link = page.locator("b.addattachlink", has_text="Assign Contractor(s)")
+            await assign_link.click()
 
-        # Hide any modal overlays if needed (FileList)
-        try:
-            file_list_elem = page.locator("#FileList")
-            if await file_list_elem.is_visible():
-                await page.evaluate("(el) => el.style.display = 'none'", file_list_elem)
-        except Exception:
-            pass  # It's okay if FileList isn't present
+            await page.wait_for_function(
+                """() => {
+                    const el = document.querySelector('#ContractorAddArea');
+                    return el && window.getComputedStyle(el).display === 'none';
+                }""",
+                timeout=5000
+            )
 
-        assign_button = page.locator("input[type='button'][value='Assign']")
-        await assign_button.click()
+            contractor_dropdown = page.locator("#ContractorID")
+            await contractor_dropdown.select_option(label=desired_contractor_full)
+            role_dropdown = page.locator("#ContractorType")
+            await role_dropdown.select_option(label="Primary")
 
-        log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
+            assign_button = page.locator("input[type='button'][value='Assign']")
+            await assign_button.wait_for(state="visible", timeout=5000)
+            await assign_button.scroll_into_view_if_needed()
+            await assign_button.click()
+            await page.wait_for_timeout(300)  # Allow UI to update
+
+            await page.wait_for_selector("#ContractorAddArea", state="hidden", timeout=5000)
+
+            #log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
+
+            # 5) Remove any other contractors (other than desired one)
+            while True:
+                contractor_rows = page.locator("#ContractorList table tbody tr")
+                count = await contractor_rows.count()
+                removed_any = False
+                for i in range(count):
+                    row = contractor_rows.nth(i)
+                    contractor_name = await row.locator("td b").inner_text()
+                    contractor_name = contractor_name.strip()
+                    if desired_contractor_full not in contractor_name:
+                        #log(f"🔍 Removing contractor: '{contractor_name}'")
+                        remove_link = row.locator("td a", has_text="Remove")
+                        try:
+                            await remove_link.click()
+                            await page.wait_for_timeout(300)  # Wait for DOM update
+                            removed_any = True
+                            break  # Refresh the list after DOM changes
+                        except Exception as e:
+                            log(f"❌ Failed to remove contractor '{contractor_name}'")
+                if not removed_any:
+                    break
 
     except Exception as e:
-        log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+        log(f"❌ Contractor assignment process failed for WO #{wo_number}")
 
 def prompt_reassignment(root, spread_file, log_func=print):
     """
@@ -562,29 +571,9 @@ def prompt_reassignment(root, spread_file, log_func=print):
     popup.transient(root)
     popup.wait_window()
 
-def parse_moved_jobs_from_spread(spread_file):
-    moved_jobs = []
-    with open(spread_file, encoding="utf-8") as f:
-        current_contractor = None
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if line in CONTRACTORS:
-                current_contractor = line
-                continue
-            # Match job line with WO and "# MOVED"
-            m = re.match(r".*WO (\d+).*(# MOVED.*)", line, re.IGNORECASE)
-            if m and current_contractor:
-                moved_jobs.append({
-                    "contractor": current_contractor,
-                    "wo": m.group(1),
-                    "line": line
-                })
-    return moved_jobs
-
 async def apply_spread_changes(spread_file, log_func=print):
     from scrape_runner import init_playwright_page
+    from spreader import parse_moved_jobs_from_spread
     jobs = parse_moved_jobs_from_spread(spread_file)
     if not jobs:
         log_func("No moved jobs to reassign.")
@@ -598,7 +587,7 @@ async def apply_spread_changes(spread_file, log_func=print):
             try:
                 url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={wo_number}"
                 await page.goto(url)
-                await asyncio.sleep(2)  # let page settle
+                await asyncio.sleep(1)  # let page settle
                 await assign_contractor(page, wo_number, desired_contractor, log=log_func)
             except Exception as e:
                 log_func(f"Failed to process WO {wo_number}: {e}")
@@ -629,6 +618,20 @@ def get_sort_key(time_str):
         hour += 12
     return hour
 
+def parse_date(date_str):
+    try:
+        return datetime.strptime(date_str.strip(), "%m-%d-%y").date()
+    except ValueError as e:
+        print(f"Warning: failed to parse date '{date_str}': {e}")
+        return datetime.min.date()
+
+def company_sort_key(name):
+    if name == "Unknown":
+        return (0, "")          # first
+    elif name == "None Assigned":
+        return (2, "")          # last
+    else:
+        return (1, name.lower()) # middle, alphabetically
 
 # I/O
 def generate_changes_file(old_list, new_list, changes_filename):
@@ -672,11 +675,20 @@ def export_txt(jobs, filename=None):
     out_path = os.path.join(OUTPUT_DIR, out_name)
 
     with open(out_path, "w", encoding="utf-8") as f:
-        for company, days in jobs_by_company.items():
+        for company in sorted(jobs_by_company.keys(), key=company_sort_key):
             f.write(f"{company}\n\n")
-            for date, entries in sorted(days.items()):
+            days = jobs_by_company[company]
+
+            # Sort dates chronologically by parsing date strings
+            sorted_dates = sorted(days.keys(), key=parse_date)
+
+            for date in sorted_dates:
                 f.write(f"{date}\n")
-                for job in sorted(entries, key=lambda j: (get_sort_key(j['time']), j['name'].lower())):
+                entries = days[date]
+
+                # Sort entries by time, then by customer name
+                entries_sorted = sorted(entries, key=lambda j: (get_sort_key(j['time']), j['name'].lower()))
+                for job in entries_sorted:
                     f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
                 f.write("\n")
             f.write("\n")

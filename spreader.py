@@ -2,6 +2,7 @@ import re
 import sys
 from collections import defaultdict, deque
 import tkinter as tk
+from datetime import datetime
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import messagebox
 import os
@@ -120,8 +121,24 @@ CITY_AREA = {
         "o fallon": "ofallon"
 }
 
+SOCKET_FORCED_STREETS = [
+    "endeavor",
+    "kentsfield",
+    "briarmont",
+    "bearfield",
+    "discovery ridge"
+]
+
 CITY_LIST = list(CITY_AREA.keys())
-LIMITS_FILE = os.path.join(MISC_DIR, "contractor_limits.json")
+
+CONFIG_PATH = os.path.join(MISC_DIR, "spreader_config.json")
+
+DEFAULT_CONFIG = {
+    "limits": DEFAULT_LIMITS,
+    "forced_streets": SOCKET_FORCED_STREETS,
+    "area_priority": AREA_PRIORITY,
+    "city_area": CITY_AREA
+}
 
 AREA_COVERAGE = {
     "greater_boone": {"Tex-Star Communications", "North Sky", "Maverick", "Subterraneus Installs", "TGS Fiber"},
@@ -132,16 +149,6 @@ AREA_COVERAGE = {
     "ofallon": {"Subterraneus Installs"},
     "unknown": set()
 }
-
-# Slot limits
-TEXSTAR_LIMIT = 7
-PIFER_LIMIT = 3
-ALLCLEAR_LIMIT = 1
-ADVANCED_LIMIT = 0
-NORTHSKY_LIMIT = 2
-SUBT_LIMIT = 9
-TGS_LIMIT = 8
-MAVERICK_LIMIT = 2
 
 TIMESLOT_ORDER = ['8:00', '10:00', '12:00', '1:00', '3:00']
 
@@ -179,6 +186,17 @@ def detect_section(line):
         return None
     return line.strip()
 
+def address_triggers_socket(address):
+    addr_lower = address.lower()
+    return any(street in addr_lower for street in SOCKET_FORCED_STREETS)
+
+def extract_customer_name(job_line):
+    # job_line example: "8:00 - Janet Brown - 0991-7706-6125 - Connectorized - 1829 ... - WO 490915"
+    parts = job_line.split(" - ")
+    if len(parts) >= 2:
+        return parts[1].strip().lower()  # lowercase for consistent sorting
+    return ""
+
 def detect_date(line):
     return bool(re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}$', line.strip()))
 
@@ -193,17 +211,20 @@ def parse_moved_jobs_from_spread(spread_file):
             line = line.strip()
             if not line:
                 continue
+            print(f"Line read: '{line}'")
             if line in CONTRACTORS:
                 current_contractor = line
+                print(f"Found contractor header: '{line}'")
                 continue
-            # Match job line with WO and "# MOVED"
             m = re.match(r".*WO (\d+).*(# MOVED.*)", line, re.IGNORECASE)
             if m and current_contractor:
+                print(f"Found moved job under '{current_contractor}': {line}")
                 moved_jobs.append({
                     "contractor": current_contractor,
                     "wo": m.group(1),
                     "line": line
                 })
+    print(f"Total moved jobs found: {len(moved_jobs)}")
     return moved_jobs
 
 def parse_input(filename):
@@ -297,113 +318,206 @@ def reassign_jobs(sections):
                     'line': job,
                     'job_type': job_type
                 })
+    apply_forced_assignments(jobs)
 
-    # Track per-slot assignments per contractor
+    # Sort jobs by date, time slot order, then customer name
+    jobs.sort(key=lambda job: (
+        job['date'],
+        slot_key(job['time']),
+        extract_customer_name(job['line'])
+    ))
+
     slot_counts = defaultdict(lambda: defaultdict(int))  # company -> (date, time) -> count
-
-    # Track round-robin overflow state for each slot for SubT/TGS
-    rr_state = defaultdict(lambda: deque(["Subterraneus Installs", "TGS Fiber"]))
-
     move_comments = {}
     output_sections = {c: defaultdict(list) for c in CONTRACTORS}
 
-    # For minimal churn, pre-compute which companies can cover which areas
-    AREA_COVERAGE = {}
+    # Precompute AREA_COVERAGE if needed
+    area_coverage = {}
     for area, priorities in AREA_PRIORITY.items():
-        # flatten round robin marker for coverage
-        AREA_COVERAGE[area] = set([p for p in priorities if not p.startswith('overflow_')])
+        area_coverage[area] = [p for p in priorities if not p.startswith('overflow_')]
 
+    # Group jobs by area, date, time
+    jobs_by_area_slot = defaultdict(lambda: defaultdict(list))
     for job in jobs:
-        key = (job['date'], job['time'])
-        orig = job['contractor']
-        city = job['city']
-        job_line = job['line']
+        area = CITY_AREA.get(job['city'].lower(), "unknown")
+        jobs_by_area_slot[area][job['date'], job['time']].append(job)
 
-        # 1. Special job type override (from your rules)
-        if job['job_type'].lower() == "5 gig conversion":
-            if orig != 'Socket':
-                move_comments[job_line] = f"FORCED to Socket by job type rule (was {orig})"
-            output_sections['Socket'][key].append(job_line)
-            slot_counts['Socket'][key] += 1
-            continue
-
-        # 2. Figure out area by city
-        area = CITY_AREA.get(city.lower(), "unknown")
-        priorities = AREA_PRIORITY.get(area, ["Unassigned"])
-
-        # 3. Minimal churn: if original contractor can cover this area and is under slot limit, keep it
-        if orig in AREA_COVERAGE.get(area, set()) and slot_counts[orig][key] < LIMITS.get(orig, 0):
-            output_sections[orig][key].append(job_line)
-            slot_counts[orig][key] += 1
-            continue
-
-        # 4. Assign according to area priority
-        assigned = False
-        for p in priorities:
-            if p.startswith("overflow_"):
-                # Round robin overflow for SubT/TGS
-                subt_full = slot_counts["Subterraneus Installs"][key] >= LIMITS.get("Subterraneus Installs", 0)
-                tgs_full = slot_counts["TGS Fiber"][key] >= LIMITS.get("TGS Fiber", 0)
-                if subt_full and tgs_full:
-                    continue
-                for _ in range(2):  # Try each once
-                    target = rr_state[key][0]
-                    if slot_counts[target][key] < LIMITS.get(target, 0):
-                        if orig != target:
-                            move_comments[job_line] = f"MOVED from {orig} (overflow, balanced to {target})"
-                        output_sections[target][key].append(job_line)
-                        slot_counts[target][key] += 1
-                        assigned = True
-                        rr_state[key].rotate(-1)
-                        break
-                    else:
-                        rr_state[key].rotate(-1)
-                if assigned:
-                    break
+    # Assign all non-jc areas strictly by priority, filling contractors fully in order
+    for area, slots in jobs_by_area_slot.items():
+        if area == "jc":
+            continue  # Skip jc for now
+        priority_list = []
+        for c in AREA_PRIORITY.get(area, []):
+            if c.startswith("overflow_"):
+                if c == "overflow_subt_tgs":
+                    priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
             else:
-                if slot_counts[p][key] < LIMITS.get(p, 0):
-                    if orig != p:
-                        move_comments[job_line] = f"MOVED from {orig}"
-                    output_sections[p][key].append(job_line)
-                    slot_counts[p][key] += 1
+                priority_list.append(c)
+
+        for key, slot_jobs in slots.items():
+            assign_strict_priority(
+                slot_jobs, key, priority_list, output_sections, slot_counts, move_comments
+            )
+
+    # Assign jc area jobs first to jc priority (excluding overflow), collect unassigned
+    jc_unassigned_jobs = []
+    if "jc" in jobs_by_area_slot:
+        jc_priority_list = []
+        for c in AREA_PRIORITY.get("jc", []):
+            if c.startswith("overflow_"):
+                if c == "overflow_subt_tgs":
+                    jc_priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
+                elif c == "GB Overflow":
+                    # Will assign these later
+                    pass
+            else:
+                jc_priority_list.append(c)
+
+        for key, slot_jobs in jobs_by_area_slot["jc"].items():
+            unassigned = assign_strict_priority(
+                slot_jobs, key, jc_priority_list, output_sections, slot_counts, move_comments, return_unassigned=True
+            )
+            jc_unassigned_jobs.extend(unassigned)
+
+    # Assign leftover jc unassigned jobs to greater_boone overflow priority
+    if jc_unassigned_jobs:
+        gb_priority_list = []
+        for c in AREA_PRIORITY.get("greater_boone", []):
+            if c.startswith("overflow_"):
+                if c == "overflow_subt_tgs":
+                    gb_priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
+            else:
+                gb_priority_list.append(c)
+
+        for job in jc_unassigned_jobs:
+            key = (job['date'], job['time'])
+            assigned = False
+            for contractor in gb_priority_list:
+                if slot_counts[contractor][key] < LIMITS.get(contractor, 0):
+                    output_sections[contractor][key].append(job['line'])
+                    slot_counts[contractor][key] += 1
+                    orig = job['contractor']
+                    if orig != contractor:
+                        move_comments[job['line']] = f"MOVED from {orig} (jc overflow to greater_boone)"
                     assigned = True
                     break
-
-        # 5. If not assigned, put in Unassigned
-        if not assigned:
-            if orig != "Unassigned":
-                move_comments[job_line] = f"MOVED from {orig} (overflow, unassigned)"
-            output_sections["Unassigned"][key].append(job_line)
-            slot_counts["Unassigned"][key] += 1
+            if not assigned:
+                output_sections["Unassigned"][key].append(job['line'])
+                slot_counts["Unassigned"][key] += 1
+                orig = job['contractor']
+                if orig != "Unassigned":
+                    move_comments[job['line']] = f"MOVED from {orig} (jc overflow unassigned fallback)"
 
     return output_sections, move_comments, jobs
 
+def assign_greater_boone_jobs(jobs, key, output_sections, slot_counts, move_comments):
+    # This function is preserved for backward compatibility but
+    # your logic is now centralized in assign_strict_priority below,
+    # so here just call assign_strict_priority for the Greater Boone overflow contractors.
+
+    subt = "Subterraneus Installs"
+    tgs = "TGS Fiber"
+    area = "greater_boone"
+
+    priority_list = []
+    for c in AREA_PRIORITY.get(area, []):
+        if c.startswith("overflow_"):
+            if c == "overflow_subt_tgs":
+                priority_list.extend([tgs, subt])
+        else:
+            priority_list.append(c)
+
+    assign_strict_priority(jobs, key, priority_list, output_sections, slot_counts, move_comments)
+
+def assign_strict_priority(jobs, key, priority_list, output_sections, slot_counts, move_comments, return_unassigned=False):
+    unassigned_jobs = []
+    for job in jobs:
+        orig = job['contractor']
+        forced = job.get('forced_contractor')
+        assigned = False
+
+        # If forced contractor present, try assign there first (ignore priority)
+        if forced:
+            if slot_counts[forced][key] < LIMITS.get(forced, 0):
+                output_sections[forced][key].append(job['line'])
+                slot_counts[forced][key] += 1
+                assigned = True
+                if orig != forced:
+                    move_comments[job['line']] = f"MOVED from {orig} (forced assignment to {forced})"
+                continue
+            else:
+                # Forced contractor is full, consider fallback
+                pass
+
+        # Try original contractor if valid and has capacity
+        if orig in priority_list and slot_counts[orig][key] < LIMITS.get(orig, 0):
+            output_sections[orig][key].append(job['line'])
+            slot_counts[orig][key] += 1
+            assigned = True
+            continue
+
+        # Strict priority fallback
+        for contractor in priority_list:
+            if slot_counts[contractor][key] < LIMITS.get(contractor, 0):
+                output_sections[contractor][key].append(job['line'])
+                slot_counts[contractor][key] += 1
+                assigned = True
+                if orig != contractor:
+                    move_comments[job['line']] = f"MOVED from {orig} (area overflow, assigned to {contractor})"
+                break
+
+        if not assigned:
+            if return_unassigned:
+                unassigned_jobs.append(job)
+            else:
+                output_sections["Unassigned"][key].append(job['line'])
+                slot_counts["Unassigned"][key] += 1
+                if orig != "Unassigned":
+                    move_comments[job['line']] = f"MOVED from {orig} (area unassigned fallback)"
+
+    if return_unassigned:
+        return unassigned_jobs
+
+def parse_date_str(date_str):
+    try:
+        return datetime.strptime(date_str, "%m-%d-%y")
+    except ValueError:
+        return datetime.strptime(date_str, "%m-%d-%Y")
+
 def write_output(sections, move_comments, filename="output.txt"):
-    # slot ordering
     with open(filename, "w", encoding="utf-8") as f:
         for contractor in CONTRACTORS:
             dayslots = sections[contractor]
             if not dayslots:
                 continue
             f.write(f"{contractor}\n\n")
-            # Gather all dates in order
+            
             by_date = defaultdict(list)
             for (date, slot), jobs in dayslots.items():
                 by_date[date].append((slot, jobs))
-            for date in sorted(by_date):
+            
+            for date in sorted(by_date, key=parse_date_str):
                 f.write(f"{date}\n")
-                # sort by slot order
                 slotjobs = sorted(by_date[date], key=lambda x: slot_key(x[0]))
                 for slot, jobs in slotjobs:
-                    for job in jobs:
+                    jobs_sorted = sorted(jobs, key=lambda job: extract_customer_name(job).lower())
+                    for job in jobs_sorted:
                         note = f"  # {move_comments[job]}" if job in move_comments else ""
                         f.write(f"{job}{note}\n")
                 f.write("\n")
     print(f"[DONE] Output written to {filename}")
 
 def run_process(file_path):
+    global LIMITS, SOCKET_FORCED_STREETS, AREA_PRIORITY, CITY_AREA
     try:
-        LIMITS = load_limits()
+        ensure_config_file_exists()
+        config = load_spreader_config()
+
+        LIMITS = config.get("limits", DEFAULT_LIMITS)
+        SOCKET_FORCED_STREETS = config.get("forced_streets", SOCKET_FORCED_STREETS)
+        AREA_PRIORITY = config.get("area_priority", AREA_PRIORITY)
+        CITY_AREA = config.get("city_area", CITY_AREA)
+        
         sections = parse_input(file_path)
         final_sections, move_comments, jobs = reassign_jobs(sections)
         base, ext = os.path.splitext(file_path)
@@ -415,67 +529,90 @@ def run_process(file_path):
     except Exception as e:
         return str(e)
 
-def ensure_limits_file_exists(filename=LIMITS_FILE):
-    if not os.path.exists(filename):
-        with open(filename, "w") as f:
-            json.dump(DEFAULT_LIMITS, f, indent=2)
-        print(f"[INFO] Created default limits file at {filename}")
+def ensure_config_file_exists():
+    if not os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=2)
+        print(f"[INFO] Created default config file at {CONFIG_PATH}")
 
-def load_limits(filename=LIMITS_FILE):
-    try:
-        with open(filename, "r") as f:
-            data = json.load(f)
-            for k in ["Unassigned", "Socket"]:
-                if k in data and data[k] == 9999:
-                    data[k] = float("inf")
-            return data
-    except Exception as e:
-        print(f"Warning: Could not load limits from {filename}, using defaults. {e}")
-        return {
-            "Tex-Star Communications": 7,
-            "North Sky": 3,
-            "Maverick": 2,
-            "Subterraneus Installs": 9,
-            "TGS Fiber": 8,
-            "Pifer Quality Communications": 3,
-            "All Clear": 1,
-            "Advanced Electric": 0,
-            "Unassigned": float("inf"),
-            "Socket": float("inf"),
-        }
+def load_spreader_config():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = json.load(f)
 
-def save_limits(limits, filename=LIMITS_FILE):
-    # Convert float('inf') back to 9999 or a large int before saving
-    to_save = {}
-    for k, v in limits.items():
-        if v == float('inf'):
-            to_save[k] = 9999
+    # Replace sentinel 9999 back to float('inf') in limits
+    def replace_9999_with_inf(obj):
+        if isinstance(obj, dict):
+            return {k: replace_9999_with_inf(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [replace_9999_with_inf(i) for i in obj]
+        elif obj == 9999:
+            return float('inf')
         else:
-            to_save[k] = v
-    with open(filename, "w") as f:
-        json.dump(to_save, f, indent=2)
+            return obj
+
+    return replace_9999_with_inf(config)
+
+def save_spreader_config(config):
+    # Replace float('inf') with sentinel 9999 before saving
+    def replace_inf(obj):
+        if isinstance(obj, dict):
+            return {k: replace_inf(v) for k, v in obj.items()}
+        elif isinstance(obj, float) and (obj == float('inf')):
+            return 9999
+        elif isinstance(obj, list):
+            return [replace_inf(i) for i in obj]
+        else:
+            return obj
+
+    safe_config = replace_inf(config)
+
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(safe_config, f, indent=2)
+
+def apply_forced_assignments(jobs):
+    for job in jobs:
+        address = extract_address(job['line'])
+        job_type = job.get('job_type', '').lower()
+
+        if address_triggers_socket(address):
+            job['forced_contractor'] = "Socket"
+            continue
+
+        if "conversion" in job_type:
+            job['forced_contractor'] = "Socket"
+            continue
+
+        # Otherwise no forced contractor
+        job['forced_contractor'] = None
 
 def open_settings_gui(root):
-    limits = load_limits()
+    config = load_spreader_config()
+    limits = config.get("limits", {})
+    forced_streets = config.get("forced_streets", [])
 
     settings_win = tk.Toplevel(root)
-    settings_win.title("Contractor Limits Settings")
+    settings_win.title("Spreader Configuration")
 
     entries = {}
-
-    tk.Label(settings_win, text="Contractor", font=("Segoe UI", 11, "bold"), width=30).grid(row=0, column=0, padx=10, pady=5)
-    tk.Label(settings_win, text="Limit", font=("Segoe UI", 11, "bold"), width=10).grid(row=0, column=1, padx=10, pady=5)
+    # Contractor Limits Section
+    tk.Label(settings_win, text="Contractor Limits", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, pady=(10, 0))
 
     for i, contractor in enumerate(CONTRACTORS, start=1):
         tk.Label(settings_win, text=contractor, width=30, anchor="w").grid(row=i, column=0, padx=10, pady=2)
         limit_val = limits.get(contractor, 0)
         if limit_val == float('inf'):
             limit_val = 9999  # show as large number
-
         entry = tk.Entry(settings_win, width=10)
         entry.insert(0, str(limit_val))
         entry.grid(row=i, column=1, padx=10, pady=2)
         entries[contractor] = entry
+
+    # Forced Streets Section (simple multi-line Text widget)
+    row_forced_streets = len(CONTRACTORS) + 2
+    tk.Label(settings_win, text="Forced Streets (one per line):", font=("Segoe UI", 11, "bold")).grid(row=row_forced_streets, column=0, columnspan=2, pady=(20, 5))
+    text_forced_streets = tk.Text(settings_win, height=8, width=40)
+    text_forced_streets.grid(row=row_forced_streets + 1, column=0, columnspan=2, padx=10)
+    text_forced_streets.insert("1.0", "\n".join(forced_streets))
 
     def save_and_close():
         new_limits = {}
@@ -489,17 +626,27 @@ def open_settings_gui(root):
             tk.messagebox.showerror("Invalid input", f"Please enter valid non-negative integers.\n{ve}")
             return
 
-        save_limits(new_limits)
-        global LIMITS
+        new_forced_streets = [line.strip() for line in text_forced_streets.get("1.0", "end").splitlines() if line.strip()]
+
+        # Update the config dict and save
+        config['limits'] = new_limits
+        config['forced_streets'] = new_forced_streets
+
+        save_spreader_config(config)
+
+        # Update global vars if used elsewhere
+        global LIMITS, SOCKET_FORCED_STREETS
         LIMITS = new_limits
-        tk.messagebox.showinfo("Saved", "Contractor limits updated successfully.")
+        SOCKET_FORCED_STREETS = new_forced_streets
+
+        tk.messagebox.showinfo("Saved", "Configuration updated successfully.")
         settings_win.destroy()
 
     btn_save = tk.Button(settings_win, text="Save", command=save_and_close)
-    btn_save.grid(row=len(CONTRACTORS)+1, column=0, pady=10)
+    btn_save.grid(row=row_forced_streets + 2, column=0, pady=10)
 
     btn_cancel = tk.Button(settings_win, text="Cancel", command=settings_win.destroy)
-    btn_cancel.grid(row=len(CONTRACTORS)+1, column=1, pady=10)
+    btn_cancel.grid(row=row_forced_streets + 2, column=1, pady=10)
 
     settings_win.transient(root)
     settings_win.grab_set()
@@ -520,16 +667,16 @@ def start_gui():
         else:
             status.set("Error!")
             messagebox.showerror("Error", f"Processing failed:\n{out_file}")
-        prompt_reassignment(root, file_path)
+        prompt_reassignment(root, out_file)
 
     root = TkinterDnD.Tk()
-    root.title("Job Assignment Reorganizer")
+    root.title(f"ButterKnife v{__version__}")
     root.geometry("480x180")
 
     label = tk.Label(root, text="\nDrop your jobs .txt file here", font=("Segoe UI", 15), pady=16)
     label.pack(expand=True)
 
-    btn_settings = tk.Button(root, text="Edit Contractor Limits", command=lambda: open_settings_gui(root))
+    btn_settings = tk.Button(root, text="Edit Spreader Config", command=lambda: open_settings_gui(root))
     btn_settings.pack(pady=(0, 10))
 
     status = tk.StringVar(value="Waiting for file...")
@@ -546,6 +693,12 @@ if __name__ == "__main__":
         print(__version__)
         sys.exit(0)
 
-    LIMITS = load_limits()        
-    ensure_limits_file_exists()
+    ensure_config_file_exists()
+    config = load_spreader_config()
+
+    LIMITS = config.get("limits", DEFAULT_LIMITS)
+    SOCKET_FORCED_STREETS = config.get("forced_streets", SOCKET_FORCED_STREETS)
+    AREA_PRIORITY = config.get("area_priority", AREA_PRIORITY)
+    CITY_AREA = config.get("city_area", CITY_AREA)
+
     start_gui()

@@ -71,6 +71,9 @@ async def run_scrape(app):
     print(f"Metadata Scrape took {tB-tA:.2f}s")
 
     total_jobs = len(raw_jobs)
+    app.jobs_done   = 0
+    app.start_time  = None
+    app.scrape_total = total_jobs
     results = []
     incomplete = []
     completed = [0]

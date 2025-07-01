@@ -10,6 +10,7 @@ from datetime import datetime
 from tkinter import messagebox
 from utils import parse_imported_jobs, assign_contractor
 from scrape_runner import run_scrape
+from spreader import parse_moved_jobs_from_spread
 from scraper_core import init_playwright_page
 from utils import handle_login, ensure_playwright, __version__, prompt_reassignment
 
@@ -57,7 +58,7 @@ class CalendarBuddyGUI:
 
         ttk.Checkbutton(settings_frame, text="Export Excel", variable=self.export_excel).grid(row=1, column=2, sticky="e", padx=10)
         ttk.Checkbutton(settings_frame, text="Send Email", variable=self.send_email).grid(row=1, column=3, sticky="e", padx=10)
-        ttk.Checkbutton(settings_frame, text="Run Spreader (experimental)", variable=self.run_spreader).grid(row=1, column=4, sticky="w", padx=10)
+        ttk.Checkbutton(settings_frame, text="Run Spreader (beta)", variable=self.run_spreader).grid(row=1, column=4, sticky="w", padx=10)
 
         ttk.Label(settings_frame, text="Calendar Date:").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
         DateEntry(settings_frame, textvariable=self.base_date, width=12).grid(row=2, column=1, sticky="w", pady=(5, 0))
@@ -119,14 +120,23 @@ class CalendarBuddyGUI:
         self.throughput_label.config(text="0.00 jobs/sec (– s/job)")
 
     def update_throughput(self):
-        elapsed = time.perf_counter() - self.start_time
+        elapsed = time.perf_counter() - self.start_time if self.start_time else 0
         if not self.jobs_done or elapsed <= 0:
             txt = "0.00 jobs/sec (– s/job)"
         else:
             num_threads = self.worker_count.get()
+            # jobs/sec
             jps = self.jobs_done / elapsed
+            # avg sec/job (accounting for concurrency)
             spj = (elapsed * num_threads) / self.jobs_done
-            txt = f"{jps:.2f} jobs/sec ({spj:.2f} s/job)"
+            # ETA
+            total     = getattr(self, "scrape_total", self.progress_bar["maximum"])
+            remaining = total - self.jobs_done
+            eta_secs  = spj * remaining
+            eta_str   = time.strftime("%M:%S", time.gmtime(eta_secs))
+
+            txt = f"{jps:.2f} jobs/sec ({spj:.2f} s/job)  •  ETA {eta_str}"
+
         self.throughput_label.config(text=txt)
 
     def start_scrape_thread(self):
@@ -149,8 +159,99 @@ class CalendarBuddyGUI:
         threading.Thread(target=target, daemon=True).start()
 
     def show_approve_spread_popup(self, spread_file):
-        # Call shared reusable prompt with the root and GUI logger
-        prompt_reassignment(self.root, spread_file, log_func=self.log)
+        if not self.run_spreader.get():
+            return
+        if messagebox.askyesno("Apply Spread Changes?",
+                               "Apply contractor reassignments now?"):
+            self.apply_spreader(spread_file)
+
+    def apply_spreader(self, spread_file):
+        jobs  = parse_moved_jobs_from_spread(spread_file)
+        total = len(jobs)
+        if not total:
+            self.log("No moved jobs to reassign.")
+            return
+
+        workers = self.worker_count.get()  # <-- take from GUI
+        self.log(f"🔁 Reassigning {total} jobs using {workers} workers…")
+
+        # reset & repurpose the bar
+        self.progress_bar["maximum"] = total
+        self.progress_var.set(0)
+        self.jobs_done   = 0
+        self.start_time  = time.perf_counter()
+
+        def _bg():
+            asyncio.run(self._apply_spreader_async(jobs, total, workers))
+        threading.Thread(target=_bg, daemon=True).start()
+
+
+    async def _apply_spreader_async(self, jobs, total, workers):
+        p, browser, context, _ = await init_playwright_page(headless=True)
+
+        try:
+            # 1) log in ONCE on page0
+            page0 = await context.new_page()
+            await handle_login(page0, log=self.log)
+
+            # 2) create your pool of pages
+            pages = [await context.new_page() for _ in range(workers)]
+            sem   = asyncio.Semaphore(workers)
+
+            async def do_assign(job):
+                async with sem:
+                    page = pages.pop()
+                    try:
+                        url = f"http://inside.sockettelecom.com/workorders/view.php?nCount={job['wo']}"
+                        await page.goto(url)
+                        await asyncio.sleep(1)  # give UI time
+                        await assign_contractor(page, job["wo"], job["contractor"], log=self.log)
+                    except Exception as e:
+                        self.log(f"❌ WO {job['wo']} failed: {e}")
+                    finally:
+                        pages.append(page)
+                    # ui update back on main thread
+                    self.root.after(0, lambda: self._update_spreader_progress(total))
+
+            # 3) dispatch them all
+            results = await asyncio.gather(
+                *(do_assign(job) for job in jobs),
+                return_exceptions=True
+            )
+            # handle any stray exceptions
+            for r in results:
+                if isinstance(r, Exception):
+                    self.log(f"⚠️ Error in worker: {r}")
+
+        finally:
+            await context.close()
+            await browser.close()
+            await p.stop()
+            self.log("✅ Reassignment complete.")
+
+
+    def _update_spreader_progress(self, total):
+        self.jobs_done += 1
+        self.progress_var.set(self.jobs_done)
+
+        pct = self.jobs_done / total * 100
+        self.counter_label.config(
+            text=f"{self.jobs_done} of {total} ({pct:.0f}%)"
+        )
+
+        elapsed = time.perf_counter() - self.start_time
+        # jobs/sec
+        jps = (self.jobs_done / elapsed) if elapsed else 0
+        # avg seconds per job (now truly concurrent)
+        spj = (elapsed * self.worker_count.get()) / self.jobs_done if self.jobs_done else 0
+
+        remaining = total - self.jobs_done
+        eta_secs  = spj * remaining
+        eta_str   = time.strftime("%M:%S", time.gmtime(eta_secs))
+
+        self.throughput_label.config(
+            text=f"{jps:.2f} jobs/sec ({spj:.2f} s/job)  •  ETA {eta_str}"
+        )
     
 if __name__ == "__main__":
     root = tk.Tk()
