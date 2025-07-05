@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright, Error as PlaywrightError
 import tkinter as tk
 import threading
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     if getattr(sys, "frozen", False):
@@ -667,8 +667,13 @@ def generate_changes_file(old_list, new_list, changes_filename):
 
 def export_txt(jobs, filename=None):
     jobs_by_company = defaultdict(lambda: defaultdict(list))
+    
+    # Assign noon jobs to Junk bucket before grouping
     for job in jobs:
-        jobs_by_company[job["company"]][job["date"]].append(job)
+        company = "Junk" if job.get("time") == "12:00" else job.get("company")
+        job_copy = job.copy()
+        job_copy["company"] = company
+        jobs_by_company[company][job_copy["date"]].append(job_copy)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     out_name = os.path.basename(filename) if filename else "Jobs.txt"
@@ -679,17 +684,23 @@ def export_txt(jobs, filename=None):
             f.write(f"{company}\n\n")
             days = jobs_by_company[company]
 
-            # Sort dates chronologically by parsing date strings
+            # Sort dates chronologically
             sorted_dates = sorted(days.keys(), key=parse_date)
 
             for date in sorted_dates:
                 f.write(f"{date}\n")
                 entries = days[date]
 
-                # Sort entries by time, then by customer name
-                entries_sorted = sorted(entries, key=lambda j: (get_sort_key(j['time']), j['name'].lower()))
+                # Sort entries by time, then name
+                entries_sorted = sorted(
+                    entries,
+                    key=lambda j: (get_sort_key(j['time']), j['name'].lower())
+                )
                 for job in entries_sorted:
-                    f.write(f"{job['time']} - {job['name']} - {job['cid']} - {job['type']} - {job['address']} - WO {job['wo']}\n")
+                    f.write(
+                        f"{job['time']} - {job['name']} - {job['cid']} - "
+                        f"{job['type']} - {job['address']} - WO {job['wo']}\n"
+                    )
                 f.write("\n")
             f.write("\n")
 

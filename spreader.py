@@ -20,7 +20,8 @@ CONTRACTORS = [
     "Maverick",
     "Socket",
     "North Sky",
-    "Unassigned"
+    "None Assigned",
+    "Unassigned",
 ]
 
 LIMITS = {
@@ -98,6 +99,8 @@ CITY_AREA = {
         "moberly": "greater_boone",
         "fulton": "greater_boone",
         "clark": "greater_boone",
+        "fayette": "greater_boone",
+        "new franklin": "greater_boone",
 
         # JC area
         "jefferson city": "jc",
@@ -178,13 +181,6 @@ def extract_timeslot(job_line):
 def extract_address(job_line):
     m = re.search(r'- ([^-]+) - WO ', job_line)
     return m.group(1) if m else ""
-
-def detect_section(line):
-    if ' - ' in line or not line.strip():
-        return None
-    if re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}$', line.strip()):
-        return None
-    return line.strip()
 
 def address_triggers_socket(address):
     addr_lower = address.lower()
@@ -298,115 +294,105 @@ def write_change_log(added, removed, filename="job_changes.log"):
             f.write("\n")
     print(f"[DONE] Change log written to {filename}")
 
+def detect_section(line):
+    """
+    Only recognize lines matching a contractor name as a new section.
+    """
+    section = line.strip()
+    return section if section in CONTRACTORS else None
+
 def reassign_jobs(sections):
-    # Parse all jobs into a flat list with fields
+    # Flatten jobs list
     jobs = []
     for contractor, days in sections.items():
         for day in days:
             for job in day['jobs']:
-                slot = extract_timeslot(job)
-                addr = extract_address(job)
-                city = parse_city(addr)
                 parts = [p.strip() for p in job.split(" - ")]
-                job_type = parts[3] if len(parts) > 3 else ""
+                slot = extract_timeslot(job)
+                date = day['date']
+                city = parse_city(extract_address(job))
                 jobs.append({
                     'original_contractor': contractor,
                     'contractor': contractor,
-                    'date': day['date'],
+                    'date': date,
                     'time': slot,
                     'city': city,
                     'line': job,
-                    'job_type': job_type
+                    'job_type': parts[3] if len(parts) > 3 else ""
                 })
     apply_forced_assignments(jobs)
 
-    # Sort jobs by date, time slot order, then customer name
-    jobs.sort(key=lambda job: (
-        job['date'],
-        slot_key(job['time']),
-        extract_customer_name(job['line'])
-    ))
+    # Sort by date, timeslot, then customer
+    jobs.sort(key=lambda j: (j['date'], slot_key(j['time']), extract_customer_name(j['line'])))
 
-    slot_counts = defaultdict(lambda: defaultdict(int))  # company -> (date, time) -> count
+    slot_counts = defaultdict(lambda: defaultdict(int))  # contractor -> (date,time) -> count
     move_comments = {}
     output_sections = {c: defaultdict(list) for c in CONTRACTORS}
 
-    # Precompute AREA_COVERAGE if needed
-    area_coverage = {}
-    for area, priorities in AREA_PRIORITY.items():
-        area_coverage[area] = [p for p in priorities if not p.startswith('overflow_')]
-
-    # Group jobs by area, date, time
-    jobs_by_area_slot = defaultdict(lambda: defaultdict(list))
+    # Group jobs by area
+    jobs_by_area = defaultdict(lambda: defaultdict(list))
     for job in jobs:
-        area = CITY_AREA.get(job['city'].lower(), "unknown")
-        jobs_by_area_slot[area][job['date'], job['time']].append(job)
+        area = CITY_AREA.get(job['city'].lower(), 'unknown')
+        key = (job['date'], job['time'])
+        jobs_by_area[area][key].append(job)
 
-    # Assign all non-jc areas strictly by priority, filling contractors fully in order
-    for area, slots in jobs_by_area_slot.items():
-        if area == "jc":
-            continue  # Skip jc for now
-        priority_list = []
+    # Collect unassigned JC jobs for overflow
+    jc_unassigned = []
+
+    # 1) Assign all non-Boone-area jobs first (skip 'greater_boone')
+    for area, slots in jobs_by_area.items():
+        if area == 'greater_boone':
+            continue
+        priority = []
         for c in AREA_PRIORITY.get(area, []):
-            if c.startswith("overflow_"):
-                if c == "overflow_subt_tgs":
-                    priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
-            else:
-                priority_list.append(c)
-
+            if c == 'overflow_subt_tgs':
+                priority.extend(['TGS Fiber', 'Subterraneus Installs'])
+            elif not c.startswith('overflow_'):
+                priority.append(c)
         for key, slot_jobs in slots.items():
+            if area == 'jc':
+                unassigned = assign_strict_priority(
+                    slot_jobs, key, priority, output_sections, slot_counts, move_comments,
+                    return_unassigned=True
+                )
+                jc_unassigned.extend(unassigned)
+            else:
+                assign_strict_priority(
+                    slot_jobs, key, priority, output_sections, slot_counts, move_comments
+                )
+
+    # 2) Assign all Boone-area jobs ('greater_boone')
+    gb_priority = []
+    if 'greater_boone' in jobs_by_area:
+        for c in AREA_PRIORITY.get('greater_boone', []):
+            if c == 'overflow_subt_tgs':
+                gb_priority.extend(['TGS Fiber', 'Subterraneus Installs'])
+            elif not c.startswith('overflow_'):
+                gb_priority.append(c)
+        for key, slot_jobs in jobs_by_area['greater_boone'].items():
             assign_strict_priority(
-                slot_jobs, key, priority_list, output_sections, slot_counts, move_comments
+                slot_jobs, key, gb_priority, output_sections, slot_counts, move_comments
             )
 
-    # Assign jc area jobs first to jc priority (excluding overflow), collect unassigned
-    jc_unassigned_jobs = []
-    if "jc" in jobs_by_area_slot:
-        jc_priority_list = []
-        for c in AREA_PRIORITY.get("jc", []):
-            if c.startswith("overflow_"):
-                if c == "overflow_subt_tgs":
-                    jc_priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
-                elif c == "GB Overflow":
-                    # Will assign these later
-                    pass
-            else:
-                jc_priority_list.append(c)
-
-        for key, slot_jobs in jobs_by_area_slot["jc"].items():
-            unassigned = assign_strict_priority(
-                slot_jobs, key, jc_priority_list, output_sections, slot_counts, move_comments, return_unassigned=True
+    # 3) Roll any JC unassigned jobs into Greater Boone overflow
+    for job in jc_unassigned:
+        key = (job['date'], job['time'])
+        placed = False
+        for contractor in gb_priority:
+            if slot_counts[contractor][key] < LIMITS.get(contractor, 0):
+                output_sections[contractor][key].append(job['line'])
+                slot_counts[contractor][key] += 1
+                move_comments[job['line']] = (
+                    f"MOVED from {job['original_contractor']} (jc overflow to greater_boone)"
+                )
+                placed = True
+                break
+        if not placed:
+            output_sections['Unassigned'][key].append(job['line'])
+            slot_counts['Unassigned'][key] += 1
+            move_comments[job['line']] = (
+                f"MOVED from {job['original_contractor']} (jc overflow unassigned fallback)"
             )
-            jc_unassigned_jobs.extend(unassigned)
-
-    # Assign leftover jc unassigned jobs to greater_boone overflow priority
-    if jc_unassigned_jobs:
-        gb_priority_list = []
-        for c in AREA_PRIORITY.get("greater_boone", []):
-            if c.startswith("overflow_"):
-                if c == "overflow_subt_tgs":
-                    gb_priority_list.extend(["TGS Fiber", "Subterraneus Installs"])
-            else:
-                gb_priority_list.append(c)
-
-        for job in jc_unassigned_jobs:
-            key = (job['date'], job['time'])
-            assigned = False
-            for contractor in gb_priority_list:
-                if slot_counts[contractor][key] < LIMITS.get(contractor, 0):
-                    output_sections[contractor][key].append(job['line'])
-                    slot_counts[contractor][key] += 1
-                    orig = job['contractor']
-                    if orig != contractor:
-                        move_comments[job['line']] = f"MOVED from {orig} (jc overflow to greater_boone)"
-                    assigned = True
-                    break
-            if not assigned:
-                output_sections["Unassigned"][key].append(job['line'])
-                slot_counts["Unassigned"][key] += 1
-                orig = job['contractor']
-                if orig != "Unassigned":
-                    move_comments[job['line']] = f"MOVED from {orig} (jc overflow unassigned fallback)"
 
     return output_sections, move_comments, jobs
 
@@ -508,7 +494,7 @@ def write_output(sections, move_comments, filename="output.txt"):
     print(f"[DONE] Output written to {filename}")
 
 def run_process(file_path):
-    global LIMITS, SOCKET_FORCED_STREETS, AREA_PRIORITY, CITY_AREA
+    global LIMITS, SOCKET_FORCED_STREETS, AREA_PRIORITY
     try:
         ensure_config_file_exists()
         config = load_spreader_config()
@@ -516,7 +502,6 @@ def run_process(file_path):
         LIMITS = config.get("limits", DEFAULT_LIMITS)
         SOCKET_FORCED_STREETS = config.get("forced_streets", SOCKET_FORCED_STREETS)
         AREA_PRIORITY = config.get("area_priority", AREA_PRIORITY)
-        CITY_AREA = config.get("city_area", CITY_AREA)
         
         sections = parse_input(file_path)
         final_sections, move_comments, jobs = reassign_jobs(sections)
@@ -699,6 +684,5 @@ if __name__ == "__main__":
     LIMITS = config.get("limits", DEFAULT_LIMITS)
     SOCKET_FORCED_STREETS = config.get("forced_streets", SOCKET_FORCED_STREETS)
     AREA_PRIORITY = config.get("area_priority", AREA_PRIORITY)
-    CITY_AREA = config.get("city_area", CITY_AREA)
 
     start_gui()

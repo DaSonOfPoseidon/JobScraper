@@ -117,7 +117,7 @@ class CalendarBuddyGUI:
     def reset_throughput(self):
         self.start_time = None
         self.jobs_done  = 0
-        self.throughput_label.config(text="0.00 jobs/sec (– s/job)")
+        self.throughput_label.config(text="0.00 jobs/sec (– s/job) - ETA 00:00")
 
     def update_throughput(self):
         elapsed = time.perf_counter() - self.start_time if self.start_time else 0
@@ -132,10 +132,10 @@ class CalendarBuddyGUI:
             # ETA
             total     = getattr(self, "scrape_total", self.progress_bar["maximum"])
             remaining = total - self.jobs_done
-            eta_secs  = spj * remaining
+            eta_secs  = remaining / jps if jps > 0 else 0
             eta_str   = time.strftime("%M:%S", time.gmtime(eta_secs))
 
-            txt = f"{jps:.2f} jobs/sec ({spj:.2f} s/job)  •  ETA {eta_str}"
+            txt = f"{jps:.2f} jobs/sec ({spj:.2f} s/job) - ETA {eta_str}"
 
         self.throughput_label.config(text=txt)
 
@@ -246,7 +246,7 @@ class CalendarBuddyGUI:
         spj = (elapsed * self.worker_count.get()) / self.jobs_done if self.jobs_done else 0
 
         remaining = total - self.jobs_done
-        eta_secs  = spj * remaining
+        eta_secs  = remaining / jps if jps > 0 else 0
         eta_str   = time.strftime("%M:%S", time.gmtime(eta_secs))
 
         self.throughput_label.config(

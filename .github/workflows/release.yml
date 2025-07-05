@@ -40,9 +40,13 @@ jobs:
 
       - name: Build JobScraper executable
         run: pyinstaller JobScraper.spec
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build ButterKnife executable
         run: pyinstaller ButterKnife.spec
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push git tag (if not exists)
         shell: bash
@@ -68,44 +72,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload JobScraper EXE to release
+      - name: Upload EXEs to release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ env.VERSION }}
-          files: dist/JobScraper.exe
+          files: dist/JobScraper.exe, dist/ButterKnife.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload ButterKnife EXE to release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ env.VERSION }}
-          files: dist/ButterKnife.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Trigger exeFiles update for JobScraper
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.PAT }}
-          repository: ${{ env.EXE_REPO }}
-          event-type: exe_update
-          client-payload: |
-            {
-              "exe_name": "JobScraper.exe",
-              "version": "${{ env.VERSION }}",
-              "release_repo": "JobScraper"
-            }
-
-      - name: Trigger exeFiles update for ButterKnife
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.PAT }}
-          repository: ${{ env.EXE_REPO }}
-          event-type: exe_update
-          client-payload: |
-            {
-              "exe_name": "ButterKnife.exe",
-              "version": "${{ env.VERSION }}",
-              "release_repo": "JobScraper"
-            }
